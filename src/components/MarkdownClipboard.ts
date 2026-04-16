@@ -1,0 +1,112 @@
+// Adapted from Docmost's markdown-clipboard extension (MIT)
+import { Extension } from '@tiptap/core'
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
+import { DOMParser as ProseDOMParser, DOMSerializer, Fragment, Slice } from '@tiptap/pm/model'
+import { find } from 'linkifyjs'
+import { markdownToHtml, htmlToMarkdown } from '@/lib/markdown'
+
+function elementFromString(value: string): HTMLElement {
+  const wrapped = ` ${value} `
+  return new window.DOMParser().parseFromString(wrapped, 'text/html').body
+}
+
+export const MarkdownClipboard = Extension.create({
+  name: 'markdownClipboard',
+  priority: 101,
+
+  addOptions() {
+    return { transformPastedText: true }
+  },
+
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('markdownClipboard'),
+        props: {
+          // Copy selection out as markdown
+          clipboardTextSerializer: (slice) => {
+            const listTypes = ['bulletList', 'orderedList', 'taskList']
+            let topLevelCount = 0
+            let hasList = false
+            slice.content.forEach((node) => {
+              if (listTypes.includes(node.type.name)) {
+                hasList = true
+                topLevelCount += node.childCount
+              } else {
+                topLevelCount++
+              }
+            })
+            if (!hasList || topLevelCount < 2) return null as unknown as string
+
+            const div = document.createElement('div')
+            const serializer = DOMSerializer.fromSchema(this.editor.schema)
+            const fragment = serializer.serializeFragment(slice.content)
+            div.appendChild(fragment)
+            return htmlToMarkdown(div.innerHTML)
+          },
+
+          // Paste markdown in as rich content
+          handlePaste: (view, event, _slice) => {
+            if (!event.clipboardData) return false
+            if (this.editor.isActive('codeBlock')) return false
+
+            const text = event.clipboardData.getData('text/plain')
+            const html = event.clipboardData.getData('text/html')
+            const vscode = event.clipboardData.getData('vscode-editor-data')
+            const vscodeData = vscode ? JSON.parse(vscode) : undefined
+            const language = vscodeData?.mode
+
+            const isVscodeMarkdown = language === 'markdown'
+            const isPlainTextOnly = !html && !vscode && !!text
+
+            if (!isVscodeMarkdown && !isPlainTextOnly) return false
+
+            if (isPlainTextOnly) {
+              if (!this.options.transformPastedText) return false
+              // Don't convert bare URLs — let the link extension handle them
+              const link = find(text, { defaultProtocol: 'http' }).find(
+                (item) => item.isLink && item.value === text,
+              )
+              if (link) return false
+            }
+
+            const { tr } = view.state
+            const { from, to } = view.state.selection
+
+            const parsed = markdownToHtml(text.replace(/\n+$/, ''))
+            const contentNodes = ProseDOMParser.fromSchema(this.editor.schema).parseSlice(
+              elementFromString(parsed),
+              { preserveWhitespace: true },
+            )
+
+            tr.replaceRange(from, to, contentNodes)
+            const insertEnd = tr.mapping.map(from, 1)
+            tr.setSelection(
+              TextSelection.near(tr.doc.resolve(Math.max(from, insertEnd - 2)), -1),
+            )
+            tr.setMeta('paste', true)
+            view.dispatch(tr)
+            return true
+          },
+
+          // Strip trailing whitespace-only paragraphs from pasted content
+          transformPasted: (slice) => {
+            let { content, openStart, openEnd } = slice
+            while (content.childCount > 1) {
+              const lastChild = content.lastChild
+              if (lastChild?.type.name === 'paragraph' && lastChild.textContent.trim() === '') {
+                const children: any[] = []
+                for (let i = 0; i < content.childCount - 1; i++) children.push(content.child(i))
+                content = Fragment.from(children)
+              } else break
+            }
+            if (content !== slice.content) {
+              return new Slice(content, openStart, Math.max(openEnd, 1))
+            }
+            return slice
+          },
+        },
+      }),
+    ]
+  },
+})

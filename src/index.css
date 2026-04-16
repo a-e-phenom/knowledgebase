@@ -1,0 +1,573 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/*
+  ============================================================
+  THEME CONFIGURATION
+  ============================================================
+
+  Theme: neutral (default)
+  Mode:  light (:root) / dark (.dark)
+
+  To switch to dark mode by default, change the ThemeProvider
+  defaultTheme prop in src/main.tsx:
+    <ThemeProvider defaultTheme="dark">
+
+  To change theme colors, replace the OKLCH values below.
+  Visit https://ui.shadcn.com/themes to generate theme CSS.
+
+  To change the base color palette (e.g. stone, zinc, gray),
+  re-initialize with the shadcn CLI:
+    npx shadcn@latest init -t vite --preset nova -y -f
+    npx shadcn@latest init -t vite --preset vega -y -f
+
+  Available presets: nova, vega, maia, lyra, mira
+  Available base colors: neutral, stone, zinc, gray, mauve,
+                         olive, mist, taupe
+
+  CLI non-interactive theme change:
+    npx shadcn@latest init -t vite -d -y -f
+  ============================================================
+*/
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.269 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.371 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.439 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ── Docmost-style editor ──────────────────────────────────────── */
+
+.docmost-editor-wrap {
+  position: relative;
+}
+
+/* Core editor */
+.docmost-editor {
+  outline: none;
+  width: 100%;
+  font-size: 1rem;
+  line-height: 1.75;
+  font-weight: 400;
+  color: var(--foreground);
+  caret-color: var(--foreground);
+  min-height: 500px;
+  padding: 0.5rem 0;
+}
+
+.docmost-editor > * + * {
+  margin-top: 0.5em;
+}
+
+/* Placeholder */
+.docmost-editor .is-editor-empty:first-child::before,
+.docmost-editor .is-empty::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--muted-foreground);
+  pointer-events: none;
+  height: 0;
+}
+.docmost-editor table .is-editor-empty:first-child::before,
+.docmost-editor table .is-empty::before {
+  display: none;
+}
+
+/* Paragraphs */
+.docmost-editor p {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+
+/* Headings */
+.docmost-editor h1,
+.docmost-editor h2,
+.docmost-editor h3,
+.docmost-editor h4,
+.docmost-editor h5,
+.docmost-editor h6 {
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  font-weight: 600;
+  margin-bottom: 0;
+}
+.docmost-editor h1 { font-size: 1.875rem; margin-top: 1.875rem; }
+.docmost-editor h2 { font-size: 1.5rem;   margin-top: 1.5rem; }
+.docmost-editor h3 { font-size: 1.25rem;  margin-top: 1.25rem; }
+.docmost-editor h4,
+.docmost-editor h5,
+.docmost-editor h6 { font-size: 1rem; margin-top: 1rem; }
+
+/* Lists */
+.docmost-editor ul,
+.docmost-editor ol {
+  padding: 0 1rem;
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+.docmost-editor ul { list-style-type: disc; }
+.docmost-editor ol { list-style-type: decimal; }
+.docmost-editor ul p,
+.docmost-editor ol p {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* Task list */
+.docmost-editor ul[data-type="taskList"] {
+  list-style: none;
+  padding: 0;
+}
+.docmost-editor ul[data-type="taskList"] p { margin: 0; }
+.docmost-editor ul[data-type="taskList"] li {
+  display: flex;
+}
+.docmost-editor ul[data-type="taskList"] li > label {
+  padding-top: 0.2rem;
+  flex: 0 0 auto;
+  margin-right: 0.5rem;
+  user-select: none;
+}
+.docmost-editor ul[data-type="taskList"] li > div {
+  flex: 1 1 auto;
+}
+.docmost-editor ul[data-type="taskList"] li > label input[type="checkbox"] {
+  width: 1em;
+  height: 1em;
+  cursor: pointer;
+}
+
+/* Blockquote */
+.docmost-editor blockquote {
+  padding-left: 1rem;
+  border-left: 3px solid var(--border);
+  margin: 0;
+}
+
+/* Horizontal rule */
+.docmost-editor hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5rem 0;
+  cursor: pointer;
+}
+.docmost-editor hr.ProseMirror-selectednode {
+  border-top: 1px solid var(--ring);
+}
+
+/* Inline code */
+.docmost-editor :not(pre) > code {
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+  font-size: 0.875em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background-color: var(--muted);
+  color: var(--foreground);
+}
+
+/* Code block */
+.docmost-editor pre {
+  padding: 0.75rem 1rem;
+  margin: 0.5rem 0;
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+  font-size: 0.875rem;
+  border-radius: 6px;
+  background-color: var(--muted);
+  color: var(--foreground);
+  overflow-x: auto;
+  tab-size: 4;
+}
+.docmost-editor pre code {
+  color: inherit;
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+/* Syntax highlight colours */
+.docmost-editor .hljs-comment, .docmost-editor .hljs-quote { color: #868e96; }
+.docmost-editor .hljs-variable, .docmost-editor .hljs-template-variable,
+.docmost-editor .hljs-attribute, .docmost-editor .hljs-tag,
+.docmost-editor .hljs-name, .docmost-editor .hljs-regexp,
+.docmost-editor .hljs-link, .docmost-editor .hljs-selector-id,
+.docmost-editor .hljs-selector-class { color: #c92a2a; }
+.docmost-editor .hljs-number, .docmost-editor .hljs-meta,
+.docmost-editor .hljs-built_in, .docmost-editor .hljs-literal,
+.docmost-editor .hljs-type, .docmost-editor .hljs-params { color: #1864ab; }
+.docmost-editor .hljs-string, .docmost-editor .hljs-symbol,
+.docmost-editor .hljs-bullet { color: #c92a2a; }
+.docmost-editor .hljs-title, .docmost-editor .hljs-section { color: #a61e4d; }
+.docmost-editor .hljs-keyword, .docmost-editor .hljs-selector-tag { color: #5f3dc4; }
+.docmost-editor .hljs-emphasis { font-style: italic; }
+.docmost-editor .hljs-strong { font-weight: 700; }
+
+/* Links */
+.docmost-editor a {
+  color: var(--foreground);
+  border-bottom: 0.07em solid var(--border);
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+/* Images */
+.docmost-image {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 0.75rem 0;
+}
+
+/* Table */
+.docmost-editor table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  margin: 0.75rem 0;
+  overflow: hidden;
+}
+.docmost-editor td,
+.docmost-editor th {
+  min-width: 1em;
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  vertical-align: top;
+  box-sizing: border-box;
+  position: relative;
+}
+.docmost-editor th {
+  font-weight: 600;
+  background-color: var(--muted);
+  text-align: left;
+}
+.docmost-editor .selectedCell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+/* Selection */
+.docmost-editor .ProseMirror-selectednode {
+  outline: 2px solid #70cff8;
+}
+
+/* Drag handle (from tiptap-extension-global-drag-handle) */
+.drag-handle {
+  position: fixed;
+  opacity: 1;
+  transition: opacity ease-in 0.2s;
+  border-radius: 0.25rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' style='fill: rgba(55, 53, 47, 0.3)'%3E%3Cpath d='M3,2 C2.44771525,2 2,1.55228475 2,1 C2,0.44771525 2.44771525,0 3,0 C3.55228475,0 4,0.44771525 4,1 C4,1.55228475 3.55228475,2 3,2 Z M3,6 C2.44771525,6 2,5.55228475 2,5 C2,4.44771525 2.44771525,4 3,4 C3.55228475,4 4,4.44771525 4,5 C4,5.55228475 3.55228475,6 3,6 Z M3,10 C2.44771525,10 2,9.55228475 2,9 C2,8.44771525 2.44771525,8 3,8 C3.55228475,8 4,8.44771525 4,9 C4,9.55228475 3.55228475,10 3,10 Z M7,2 C6.44771525,2 6,1.55228475 6,1 C6,0.44771525 6.44771525,0 7,0 C7.55228475,0 8,0.44771525 8,1 C8,1.55228475 7.55228475,2 7,2 Z M7,6 C6.44771525,6 6,5.55228475 6,5 C6,4.44771525 6.44771525,4 7,4 C7.55228475,4 8,4.44771525 8,5 C8,5.55228475 7.55228475,6 7,6 Z M7,10 C6.44771525,10 6,9.55228475 6,9 C6,8.44771525 6.44771525,8 7,8 C7.55228475,8 8,8.44771525 8,9 C8,9.55228475 7.55228475,10 7,10 Z'%3E%3C/path%3E%3C/svg%3E");
+  background-size: calc(0.5em + 0.375rem) calc(0.5em + 0.375rem);
+  background-repeat: no-repeat;
+  background-position: center;
+  width: 1.2rem;
+  height: 1.5rem;
+  z-index: 50;
+  cursor: grab;
+}
+.drag-handle:hover { background-color: var(--accent); }
+.drag-handle:active { background-color: var(--accent); cursor: grabbing; }
+.drag-handle.hide { opacity: 0; pointer-events: none; }
+
+/* Bubble menu */
+.docmost-bubble-menu {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+}
+.bubble-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.bubble-btn:hover { background: var(--accent); }
+.bubble-btn.active { background: var(--accent); color: var(--foreground); }
+.bubble-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 2px;
+}
+
+/* ── Slash command menu ─────────────────────────────────────────── */
+.slash-menu {
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  overflow: hidden;
+  padding: 4px;
+  width: 260px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.slash-menu-empty {
+  padding: 10px 12px;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+}
+.slash-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--foreground);
+  transition: background 0.1s;
+}
+.slash-menu-item:hover,
+.slash-menu-item.selected {
+  background: var(--accent);
+}
+.slash-menu-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.slash-menu-text {
+  display: flex;
+  flex-direction: column;
+}
+.slash-menu-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--foreground);
+  line-height: 1.2;
+}
+.slash-menu-desc {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  margin-top: 1px;
+}
+.slash-icon-text {
+  font-size: 0.9rem;
+}
+
+/* ── Tag chip ────────────────────────────────────────────────────── */
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.tag-chip-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── Docmost page title ──────────────────────────────────────────── */
+.docmost-title {
+  font-size: 2.5rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--foreground);
+  border: none;
+  outline: none;
+  width: 100%;
+  background: transparent;
+  resize: none;
+  padding: 0;
+  margin: 0 0 0.5rem 0;
+  font-family: inherit;
+  overflow: hidden;
+}
+.docmost-title::placeholder { color: var(--muted-foreground); }
+
+/* ── AI message prose ────────────────────────────────────────────── */
+.prose.prose-sm {
+  font-size: 0.875rem;
+  color: inherit;
+}
+.prose.prose-sm > :first-child { margin-top: 0; }
+.prose.prose-sm > :last-child  { margin-bottom: 0; }
+.prose.prose-sm p   { margin-top: 0.4em; margin-bottom: 0.4em; }
+.prose.prose-sm ul,
+.prose.prose-sm ol  { margin-top: 0.4em; margin-bottom: 0.4em; padding-left: 1.4em; }
+.prose.prose-sm li  { margin-top: 0.15em; margin-bottom: 0.15em; }
+.prose.prose-sm h1,
+.prose.prose-sm h2,
+.prose.prose-sm h3  { margin-top: 0.8em; margin-bottom: 0.3em; color: inherit; }
+.prose.prose-sm pre {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  background: var(--muted);
+  color: var(--foreground);
+  border-radius: 6px;
+  padding: 0.75em 1em;
+}
+.prose.prose-sm code:not(pre code) {
+  background: var(--muted);
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  font-size: 0.82em;
+}
+.prose.prose-sm blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 0.8em;
+  color: var(--muted-foreground);
+  margin: 0.5em 0;
+}
+.prose.prose-sm a { color: var(--primary); }
+
+/* AI chat: collapse injected/preview avatar fallbacks (matches devtools w/h 0) */
+#ai-chat-messages-thread [data-slot="avatar-fallback"] {
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
