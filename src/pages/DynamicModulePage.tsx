@@ -106,6 +106,7 @@ export function DynamicModulePage({ id: propId }: Props) {
       assistantIcon={<ModuleIconComponent icon={mod.icon} className="h-4 w-4" />}
       systemPrompt={effectiveSystemPrompt}
       outputMode={outputMode}
+      knowledge={mod.knowledge}
       emptyTitle={`Ask me anything — ${mod.label}`}
       emptySubtitle={
         outputMode === 'structured'

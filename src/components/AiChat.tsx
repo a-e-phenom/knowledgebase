@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, type ReactNode } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
@@ -32,7 +32,7 @@ import { toast } from 'sonner'
 import { marked } from 'marked'
 import { getDocumentTextForAi } from '@/lib/documentTextForAi'
 import { parseStructuredAssistantResponse } from '@/lib/structuredModuleOutput'
-import type { ModuleOutputMode } from '@/lib/moduleSettings'
+import type { ModuleKnowledge, ModuleOutputMode } from '@/lib/moduleSettings'
 import {
   insertMarkdownDocument,
   structuredCardsToMarkdown,
@@ -40,6 +40,7 @@ import {
 } from '@/lib/insertMarkdownDocument'
 import { SHARED_WORKSPACE_USER_ID } from '@/lib/sharedWorkspace'
 import { requestOpenAIChatCompletion } from '@/lib/openaiChat'
+import { filterDocumentsByKnowledge } from '@/lib/moduleKnowledge'
 
 marked.use({ breaks: true })
 
@@ -50,6 +51,12 @@ export type Document = {
   file_name: string | null
   file_url: string | null
   file_type: string | null
+  folder_id: string | null
+}
+
+type FolderItem = {
+  id: string
+  parent_id: string | null
 }
 
 type AttachedDoc = { id: string; title: string }
@@ -75,6 +82,7 @@ export type AiChatProps = {
   outputMode?: ModuleOutputMode
   /** Optional icon shown next to the module title in the header */
   assistantIcon?: ReactNode
+  knowledge?: ModuleKnowledge
 }
 
 export function AiChat({
@@ -88,12 +96,14 @@ export function AiChat({
   inputPlaceholder = 'Ask a question… type @ to reference a document',
   outputMode = 'chat',
   assistantIcon,
+  knowledge,
 }: AiChatProps) {
   const navigate = useNavigate()
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [documents, setDocuments] = useState<Document[]>([])
+  const [folders, setFolders] = useState<FolderItem[]>([])
   const [showPicker, setShowPicker] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
   const [pickerIndex, setPickerIndex] = useState(0)
@@ -157,6 +167,11 @@ export function AiChat({
   const [saveDocTitle, setSaveDocTitle] = useState('')
   const [saveDocMarkdown, setSaveDocMarkdown] = useState('')
   const [saveDocLoading, setSaveDocLoading] = useState(false)
+
+  const availableDocuments: Document[] = useMemo(
+    () => filterDocumentsByKnowledge(documents, folders, knowledge),
+    [documents, folders, knowledge],
+  )
 
   const openSaveMarkdownDialog = (suggestedTitle: string, markdown: string) => {
     setSaveDocTitle(suggestedMarkdownTitle(suggestedTitle))
@@ -225,21 +240,28 @@ export function AiChat({
   }, [messages, isLoading])
 
   const fetchDocuments = async () => {
-    const { data } = await supabase
-      .from('documents')
-      .select('id, title, content, file_name, file_url, file_type')
-      .eq('user_id', SHARED_WORKSPACE_USER_ID)
-      .order('updated_at', { ascending: false })
-    setDocuments(data || [])
+    const [docRes, folderRes] = await Promise.all([
+      supabase
+        .from('documents')
+        .select('id, title, content, file_name, file_url, file_type, folder_id')
+        .eq('user_id', SHARED_WORKSPACE_USER_ID)
+        .order('updated_at', { ascending: false }),
+      supabase
+        .from('folders')
+        .select('id, parent_id')
+        .eq('user_id', SHARED_WORKSPACE_USER_ID),
+    ])
+    setDocuments(docRes.data || [])
+    setFolders(folderRes.data || [])
   }
 
-  const filteredDocs = documents.filter(
+  const filteredDocs = availableDocuments.filter(
     (d) =>
       !attachedDocs.find((a) => a.id === d.id) &&
       d.title.toLowerCase().includes(pickerQuery.toLowerCase()),
   )
 
-  const filteredSources = documents.filter((d) => {
+  const filteredSources = availableDocuments.filter((d) => {
     const q = sourceQuery.trim().toLowerCase()
     if (!q) return true
     return (
@@ -253,6 +275,12 @@ export function AiChat({
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     )
   }
+
+  useEffect(() => {
+    const allowedIds = new Set(availableDocuments.map((doc) => doc.id))
+    setSelectedSourceIds((prev) => prev.filter((id) => allowedIds.has(id)))
+    setAttachedDocs((prev) => prev.filter((doc) => allowedIds.has(doc.id)))
+  }, [availableDocuments])
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value
@@ -479,7 +507,7 @@ export function AiChat({
   ) : (
     <p className="text-xs text-muted-foreground flex items-center gap-1">
       <Library className="h-3 w-3" />
-      {documents.length} doc{documents.length !== 1 ? 's' : ''} available · type{' '}
+      {availableDocuments.length} doc{availableDocuments.length !== 1 ? 's' : ''} available · type{' '}
       <kbd className="rounded border bg-muted px-1 py-0.5 text-[10px] font-mono">@</kbd> to reference
     </p>
   )
@@ -618,7 +646,7 @@ export function AiChat({
                 )}
               </Button>
               <p className="text-[11px] text-muted-foreground text-center">
-                {selectedSourceIds.length} selected · {documents.length} total
+                {selectedSourceIds.length} selected · {availableDocuments.length} total
               </p>
             </div>
           </aside>

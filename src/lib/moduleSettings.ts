@@ -6,6 +6,12 @@ export type ModuleIcon = 'bot' | 'file-text' | 'sparkles' | 'book-open' | 'zap' 
 
 export type ModuleOutputMode = 'chat' | 'structured'
 
+export type ModuleKnowledge = {
+  allFiles: boolean
+  documentIds: string[]
+  folderIds: string[]
+}
+
 export type Module = {
   id: string
   /** Human-readable name */
@@ -24,6 +30,8 @@ export type Module = {
    * The model is told to reply as JSON `{ cards: [{ title, body }] }`.
    */
   structuredOutputPrompt?: string
+  /** Which documents/folders the module can use as knowledge. */
+  knowledge?: ModuleKnowledge
   /** built-in modules can't be deleted */
   builtin?: boolean
 }
@@ -69,9 +77,24 @@ const LEGACY_STORAGE_KEY = 'modules_v2'
 /** Rows from Supabase: overrides + custom modules (not the code-only builtins). */
 let remoteCustom: Module[] = []
 
+function normalizeKnowledge(knowledge?: Partial<ModuleKnowledge> | null): ModuleKnowledge {
+  return {
+    allFiles: knowledge?.allFiles ?? true,
+    documentIds: Array.from(new Set(knowledge?.documentIds ?? [])),
+    folderIds: Array.from(new Set(knowledge?.folderIds ?? [])),
+  }
+}
+
+function normalizeModule(module: Module): Module {
+  return {
+    ...module,
+    knowledge: normalizeKnowledge(module.knowledge),
+  }
+}
+
 function rowToModule(row: { id: string; data: unknown }): Module {
   const d = row.data as Partial<Module>
-  return { ...d, id: row.id } as Module
+  return normalizeModule({ ...d, id: row.id } as Module)
 }
 
 async function reloadFromDatabase(): Promise<void> {
@@ -128,8 +151,8 @@ export function getAllModules(): Module[] {
   const custom = loadCustom()
   return BUILTIN_MODULES.map((b) => {
     const override = custom.find((c) => c.id === b.id)
-    return override ? { ...b, ...override, builtin: true } : b
-  }).concat(custom.filter((c) => !BUILTIN_MODULES.find((b) => b.id === c.id)))
+    return normalizeModule(override ? { ...b, ...override, builtin: true } : b)
+  }).concat(custom.filter((c) => !BUILTIN_MODULES.find((b) => b.id === c.id)).map(normalizeModule))
 }
 
 export function getModule(id: string): Module | undefined {
@@ -155,7 +178,7 @@ export async function deleteModule(id: string): Promise<void> {
 
 export async function createModule(partial: Omit<Module, 'id' | 'builtin'>): Promise<Module> {
   const id = `module-${Date.now()}`
-  const module: Module = { ...partial, id }
+  const module: Module = normalizeModule({ ...partial, id })
   await saveModule(module)
   return module
 }
@@ -172,12 +195,12 @@ export const MODULE_ICON_OPTIONS: { value: ModuleIcon; label: string }[] = [
   { value: 'search', label: 'Search' },
 ]
 
-export const MODULE_COLOR_OPTIONS: { value: string; label: string }[] = [
-  { value: 'text-blue-500', label: 'Blue' },
-  { value: 'text-emerald-500', label: 'Green' },
-  { value: 'text-violet-500', label: 'Purple' },
-  { value: 'text-orange-500', label: 'Orange' },
-  { value: 'text-rose-500', label: 'Rose' },
-  { value: 'text-amber-500', label: 'Amber' },
-  { value: 'text-cyan-500', label: 'Cyan' },
+export const MODULE_COLOR_OPTIONS: { value: string; label: string; swatch: string }[] = [
+  { value: 'text-blue-500', label: 'Blue', swatch: '#3b82f6' },
+  { value: 'text-emerald-500', label: 'Green', swatch: '#10b981' },
+  { value: 'text-violet-500', label: 'Purple', swatch: '#8b5cf6' },
+  { value: 'text-orange-500', label: 'Orange', swatch: '#f97316' },
+  { value: 'text-rose-500', label: 'Rose', swatch: '#f43f5e' },
+  { value: 'text-amber-500', label: 'Amber', swatch: '#f59e0b' },
+  { value: 'text-cyan-500', label: 'Cyan', swatch: '#06b6d4' },
 ]
