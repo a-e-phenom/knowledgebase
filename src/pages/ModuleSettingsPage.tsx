@@ -33,10 +33,6 @@ import {
   type ModuleKnowledge,
   type ModuleStructuredLayout,
 } from '@/lib/moduleSettings'
-import {
-  STRUCTURED_OUTPUT_JSON_EXAMPLE,
-  STRUCTURED_OUTPUT_SINGLE_DOCUMENT_JSON_EXAMPLE,
-} from '@/lib/structuredModuleOutput'
 import { CREATE_PROTOTYPE_MODULE_ID } from '@/lib/createPrototypeSchema'
 import { ModuleIconComponent } from '@/components/ModuleIconComponent'
 import { AppHeader } from '@/components/AppHeader'
