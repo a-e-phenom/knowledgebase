@@ -73,3 +73,35 @@ export function htmlToMarkdown(html: string): string {
 
   return td.turndown(html)
 }
+
+// ── Download as .md (editor stores HTML) ─────────────────────────────────────
+
+/** Safe filename ending in `.md`. */
+export function markdownDownloadFilename(title: string): string {
+  const base = (title.trim() || 'document').replace(/[/\\?%*:|"<>]/g, '-').trim() || 'document'
+  return base.toLowerCase().endsWith('.md') ? base : `${base}.md`
+}
+
+/** One markdown file: document title as H1 plus body converted from TipTap HTML. */
+export function buildMarkdownDownload(displayTitle: string, editorHtml: string): string {
+  const body = htmlToMarkdown(editorHtml || '').trim()
+  const t = displayTitle.trim() || 'Untitled'
+  return `# ${t}\n\n${body}`.replace(/\n{3,}/g, '\n\n').trimEnd() + '\n'
+}
+
+export function triggerDownloadTextFile(
+  filename: string,
+  content: string,
+  mime: string = 'text/markdown;charset=utf-8',
+): void {
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}

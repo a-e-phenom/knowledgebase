@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
@@ -32,12 +31,17 @@ import {
   type ModuleIcon,
   type ModuleOutputMode,
   type ModuleKnowledge,
+  type ModuleStructuredLayout,
 } from '@/lib/moduleSettings'
-import { STRUCTURED_OUTPUT_JSON_EXAMPLE } from '@/lib/structuredModuleOutput'
+import {
+  STRUCTURED_OUTPUT_JSON_EXAMPLE,
+  STRUCTURED_OUTPUT_SINGLE_DOCUMENT_JSON_EXAMPLE,
+} from '@/lib/structuredModuleOutput'
 import { CREATE_PROTOTYPE_MODULE_ID } from '@/lib/createPrototypeSchema'
 import { ModuleIconComponent } from '@/components/ModuleIconComponent'
 import { AppHeader } from '@/components/AppHeader'
 import { SHARED_WORKSPACE_USER_ID } from '@/lib/sharedWorkspace'
+import { cn } from '@/lib/utils'
 
 const DEFAULT_INSTRUCTIONS = 'You are a helpful AI assistant. Answer questions clearly and concisely.'
 const DEFAULT_KNOWLEDGE: ModuleKnowledge = { allFiles: true, documentIds: [], folderIds: [] }
@@ -60,6 +64,7 @@ export function ModuleSettingsPage() {
   const [instructionsDocId, setInstructionsDocId] = useState<string | null>(null)
   const [isBuiltin, setIsBuiltin] = useState(false)
   const [outputMode, setOutputMode] = useState<ModuleOutputMode>('chat')
+  const [structuredLayout, setStructuredLayout] = useState<ModuleStructuredLayout>('cards')
   const [structuredOutputPrompt, setStructuredOutputPrompt] = useState('')
 
   const [instructionDocuments, setInstructionDocuments] = useState<DocOption[]>([])
@@ -71,6 +76,31 @@ export function ModuleSettingsPage() {
   const [knowledgeDocPickerOpen, setKnowledgeDocPickerOpen] = useState(false)
   const [knowledge, setKnowledge] = useState<ModuleKnowledge>(DEFAULT_KNOWLEDGE)
   const [activeTab, setActiveTab] = useState<SettingsTab>('persona')
+  const structuredShapeRef = useRef<HTMLDivElement>(null)
+  const moduleNameRef = useRef<HTMLTextAreaElement>(null)
+
+  const fitModuleNameHeight = useCallback(() => {
+    const el = moduleNameRef.current
+    if (!el) return
+    const cs = window.getComputedStyle(el)
+    const parsedLh = parseFloat(cs.lineHeight)
+    const line =
+      Number.isFinite(parsedLh) && parsedLh > 0
+        ? parsedLh
+        : parseFloat(cs.fontSize) * 1.15
+    const minH = line
+    const maxH = line * 2
+    el.style.height = 'auto'
+    const sh = el.scrollHeight
+    const next = Math.min(Math.max(sh, minH), maxH)
+    el.style.height = `${next}px`
+    el.style.overflowY = sh > maxH ? 'auto' : 'hidden'
+  }, [])
+
+  useLayoutEffect(() => {
+    if (activeTab !== 'persona') return
+    fitModuleNameHeight()
+  }, [activeTab, label, fitModuleNameHeight])
 
   const selectedDoc = instructionDocuments.find(d => d.id === instructionsDocId)
 
@@ -178,6 +208,7 @@ export function ModuleSettingsPage() {
       }
       setIsBuiltin(!!mod.builtin)
       setOutputMode(mod.outputMode ?? 'chat')
+      setStructuredLayout(mod.structuredLayout === 'single_document' ? 'single_document' : 'cards')
       setStructuredOutputPrompt(mod.structuredOutputPrompt ?? '')
       setKnowledge(mod.knowledge ?? DEFAULT_KNOWLEDGE)
     })()
@@ -200,6 +231,7 @@ export function ModuleSettingsPage() {
       instructionsDocId: useDocMode ? instructionsDocId : null,
       outputMode,
       structuredOutputPrompt: outputMode === 'structured' ? structuredOutputPrompt.trim() : '',
+      structuredLayout: outputMode === 'structured' ? structuredLayout : undefined,
       knowledge,
     }
 
@@ -257,6 +289,15 @@ export function ModuleSettingsPage() {
     setActiveTab(tabOrder[Math.min(activeTabIndex + 1, tabOrder.length - 1)])
   }
 
+  useEffect(() => {
+    if (activeTab !== 'output' || outputMode !== 'structured') return
+    const el = structuredShapeRef.current
+    if (!el) return
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    })
+  }, [activeTab, outputMode])
+
   return (
     <div className="min-h-screen bg-background">
       <AppHeader />
@@ -264,9 +305,9 @@ export function ModuleSettingsPage() {
       <Dialog open onOpenChange={(open) => !open && navigate(closePath)}>
         <DialogContent
           showCloseButton
-          className="w-[min(96vw,72rem)] max-w-2xl overflow-hidden p-0 sm:max-w-2xl"
+          className="flex h-[min(90vh,56rem)] max-h-[90vh] w-[min(96vw,40rem)] max-w-2xl flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl"
         >
-          <div className="flex max-h-[88vh] flex-col">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <DialogHeader className="border-b px-6 py-5 pr-14">
               <DialogTitle>Module Configuration</DialogTitle>
             </DialogHeader>
@@ -296,23 +337,25 @@ export function ModuleSettingsPage() {
               {activeTab === 'persona' && (
                 <div className="space-y-6">
                   <div className="space-y-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0 flex-1 space-y-2">
-                        <Label htmlFor="label">Name</Label>
-                        <Input
+                    <div className="space-y-2">
+                      <Label htmlFor="label">Name</Label>
+                      <div className="flex items-center justify-between gap-4">
+                        <textarea
+                          ref={moduleNameRef}
                           id="label"
                           value={label}
                           onChange={(e) => setLabel(e.target.value)}
                           placeholder="New module"
-                          className="h-auto border-0 bg-transparent px-0 py-0 text-4xl font-medium tracking-tight text-foreground shadow-none placeholder:text-zinc-400 focus-visible:border-0 focus-visible:ring-0 md:text-4xl"
+                          rows={1}
+                          wrap="soft"
+                          className="min-w-0 flex-1 resize-none overflow-hidden border-0 bg-transparent px-0 py-0 text-4xl font-medium leading-[1.15] tracking-tight text-foreground shadow-none placeholder:text-zinc-400 focus-visible:border-0 focus-visible:outline-none focus-visible:ring-0 md:text-4xl break-words [overflow-wrap:anywhere]"
                         />
-                      </div>
 
-                      <Popover open={iconPickerOpen} onOpenChange={setIconPickerOpen}>
+                        <Popover open={iconPickerOpen} onOpenChange={setIconPickerOpen}>
                         <PopoverTrigger asChild>
                           <button
                             type="button"
-                            className="mt-5 inline-flex h-11 items-center gap-1 rounded-xl border border-border bg-muted/60 px-2.5 text-foreground transition-colors hover:bg-muted"
+                            className="inline-flex h-11 shrink-0 items-center gap-1 rounded-xl border border-border bg-muted/60 px-2.5 text-foreground transition-colors hover:bg-muted"
                             aria-label="Select icon"
                           >
                             <span className="flex h-6 w-6 items-center justify-center rounded-lg">
@@ -354,7 +397,8 @@ export function ModuleSettingsPage() {
                             </div>
                           </div>
                         </PopoverContent>
-                      </Popover>
+                        </Popover>
+                      </div>
                     </div>
 
                     <div className="space-y-1">
@@ -673,15 +717,116 @@ export function ModuleSettingsPage() {
                         Replies appear as a normal conversation with markdown support.
                       </p>
                     ) : (
-                      <div className="space-y-3">
-                        <p className="text-sm text-muted-foreground">
-                          The module page shows sources on the left and generated cards on the right. Users pick documents and click Generate, with behavior driven by the instructions below.
-                        </p>
+                      <div className="space-y-4">
+                        <div ref={structuredShapeRef} className="space-y-3">
+                          <p className="text-[11px] font-medium uppercase tracking-[0.07em] text-muted-foreground">
+                            Generate as
+                          </p>
+                          <div
+                            className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-background"
+                            role="radiogroup"
+                            aria-label="Generate as"
+                          >
+                            <button
+                              type="button"
+                              role="radio"
+                              aria-checked={structuredLayout === 'cards'}
+                              onClick={() => setStructuredLayout('cards')}
+                              className={cn(
+                                'flex w-full items-start gap-3 px-4 py-3.5 text-left transition-colors sm:items-center sm:gap-4',
+                                structuredLayout === 'cards'
+                                  ? 'bg-muted/60'
+                                  : 'hover:bg-muted/35'
+                              )}
+                            >
+                              <span
+                                className={cn(
+                                  'mt-0.5 flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border-2 transition-colors sm:mt-0',
+                                  structuredLayout === 'cards'
+                                    ? 'border-primary'
+                                    : 'border-muted-foreground/35'
+                                )}
+                                aria-hidden
+                              >
+                                {structuredLayout === 'cards' ? (
+                                  <span className="h-2.5 w-2.5 rounded-full bg-primary" />
+                                ) : null}
+                              </span>
+                              <span
+                                className={cn(
+                                  'shrink-0 text-sm',
+                                  structuredLayout === 'cards'
+                                    ? 'font-semibold text-foreground'
+                                    : 'font-medium text-muted-foreground'
+                                )}
+                              >
+                                Cards
+                              </span>
+                              <span className="min-w-0 flex-1 text-right text-[13px] leading-snug text-muted-foreground">
+                                Each section becomes its own titled card.
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              role="radio"
+                              aria-checked={structuredLayout === 'single_document'}
+                              onClick={() => setStructuredLayout('single_document')}
+                              className={cn(
+                                'flex w-full items-start gap-3 px-4 py-3.5 text-left transition-colors sm:items-center sm:gap-4',
+                                structuredLayout === 'single_document'
+                                  ? 'bg-muted/60'
+                                  : 'hover:bg-muted/35'
+                              )}
+                            >
+                              <span
+                                className={cn(
+                                  'mt-0.5 flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border-2 transition-colors sm:mt-0',
+                                  structuredLayout === 'single_document'
+                                    ? 'border-primary'
+                                    : 'border-muted-foreground/35'
+                                )}
+                                aria-hidden
+                              >
+                                {structuredLayout === 'single_document' ? (
+                                  <span className="h-2.5 w-2.5 rounded-full bg-primary" />
+                                ) : null}
+                              </span>
+                              <span
+                                className={cn(
+                                  'shrink-0 text-sm',
+                                  structuredLayout === 'single_document'
+                                    ? 'font-semibold text-foreground'
+                                    : 'font-medium text-muted-foreground'
+                                )}
+                              >
+                                One document
+                              </span>
+                              <span className="min-w-0 flex-1 text-right text-[13px] leading-snug text-muted-foreground">
+                                Everything flows as one markdown document.
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+
+                        
+
                         <div className="space-y-2">
-                          <Label htmlFor="structured-prompt">What to show on each card</Label>
+                          <Label htmlFor="structured-prompt">
+                            {structuredLayout === 'cards'
+                              ? 'What to show on each card'
+                              : 'Additional instructions for the document formatting (Optional)'}
+                          </Label>
                           <p className="text-xs text-muted-foreground">
-                            Describe the fields, tone, and what each card should represent, for example:
-                            &nbsp;&quot;Card per finding: title = summary, body = evidence and next steps&quot;.
+                            {structuredLayout === 'cards' ? (
+                              <>
+                                Describe fields, tone, and what each card represents, for example: &quot;Card per
+                                finding: title = summary, body = evidence and next steps&quot;.
+                              </>
+                            ) : (
+                              <>
+                                Describe sections, length, and style for the one markdown document.
+                              </>
+                            )}
                           </p>
                           <textarea
                             id="structured-prompt"
@@ -689,15 +834,14 @@ export function ModuleSettingsPage() {
                             onChange={(e) => setStructuredOutputPrompt(e.target.value)}
                             rows={8}
                             className="w-full resize-y rounded-md border border-input bg-background px-3 py-2.5 font-mono text-sm leading-relaxed shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            placeholder="Example: For each requirement in the docs, one card: title = requirement name, body = status, owner, and notes."
+                            placeholder={
+                              structuredLayout === 'cards'
+                                ? 'Example: For each requirement in the docs, one card: title = requirement name, body = status, owner, and notes.'
+                                : 'Example: One help article: H1 title, overview paragraph, numbered setup steps, troubleshooting H2, and a short FAQ.'
+                            }
                           />
                         </div>
-                        <p className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                          The model is required to answer with JSON only, shaped like{' '}
-                          <code className="break-all text-[11px]">{STRUCTURED_OUTPUT_JSON_EXAMPLE}</code>.
-                          Each entry in <code className="text-[11px]">cards</code> renders as one card, and{' '}
-                          <code className="text-[11px]">body</code> supports markdown.
-                        </p>
+                      
                       </div>
                     )}
                 </div>

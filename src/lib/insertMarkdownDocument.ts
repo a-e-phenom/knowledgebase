@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import { SHARED_WORKSPACE_USER_ID } from '@/lib/sharedWorkspace'
+import { firstOrNull } from '@/lib/supabaseQuery'
 import { markdownToHtml } from '@/lib/markdown'
 
 /**
@@ -38,7 +39,7 @@ export async function insertMarkdownDocument(
   markdownContent: string,
 ): Promise<{ id: string } | { error: string }> {
   const html = contentForEditor(markdownContent)
-  const { data, error } = await supabase
+  const { data: rows, error } = await supabase
     .from('documents')
     .insert({
       title: docTitle.trim() || 'Untitled',
@@ -46,8 +47,8 @@ export async function insertMarkdownDocument(
       user_id: SHARED_WORKSPACE_USER_ID,
     })
     .select('id')
-    .single()
   if (error) return { error: error.message }
-  if (!data?.id) return { error: 'No document returned' }
+  const data = firstOrNull(rows)
+  if (!data?.id) return { error: 'No document returned (insert may have succeeded — check RLS SELECT on documents).' }
   return { id: data.id }
 }

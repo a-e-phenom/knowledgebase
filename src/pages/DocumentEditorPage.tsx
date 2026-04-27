@@ -7,8 +7,14 @@ import { Badge } from '@/components/ui/badge'
 import { BlockEditor } from '@/components/BlockEditor'
 import { TagManagementDialog } from '@/components/TagManagementDialog'
 import { AppHeader } from '@/components/AppHeader'
-import { Save, Tag as TagIcon } from 'lucide-react'
+import { Download, Save, Tag as TagIcon } from 'lucide-react'
 import { toast } from 'sonner'
+import { firstOrNull, isLikelyDatabaseUuid } from '@/lib/supabaseQuery'
+import {
+  buildMarkdownDownload,
+  markdownDownloadFilename,
+  triggerDownloadTextFile,
+} from '@/lib/markdown'
 
 type Tag = {
   id: string
@@ -51,24 +57,46 @@ export function DocumentEditorPage() {
 
   const fetchDocument = async () => {
     try {
-      const { data: docData, error: docError } = await supabase
+      if (!id || !isLikelyDatabaseUuid(id)) {
+        toast.error('Invalid document link')
+        navigate('/documents')
+        return
+      }
+
+      const { data: docRows, error: docError } = await supabase
         .from('documents')
         .select('*')
         .eq('id', id)
         .eq('user_id', SHARED_WORKSPACE_USER_ID)
-        .maybeSingle()
+        .limit(1)
 
       if (docError) throw docError
+      const docData = firstOrNull(docRows)
       if (!docData) { toast.error('Document not found'); navigate('/documents'); return }
       if (docData.file_url) { toast.error('Cannot edit uploaded files'); navigate('/documents'); return }
 
       setTitle(docData.title)
       setContent(docData.content || '')
 
-      const { data: tagData, error: tagError } = await supabase
-        .from('document_tags').select('tag_id, tags(*)').eq('document_id', id)
+      const { data: linkRows, error: linkErr } = await supabase
+        .from('document_tags')
+        .select('tag_id')
+        .eq('document_id', id)
 
-      if (!tagError && tagData) setTags(tagData.map((dt: any) => dt.tags))
+      if (linkErr) {
+        setTags([])
+      } else {
+        const tagIds = [...new Set((linkRows ?? []).map((r) => r.tag_id))]
+        if (tagIds.length === 0) {
+          setTags([])
+        } else {
+          const { data: tagRows, error: tagsErr } = await supabase
+            .from('tags')
+            .select('*')
+            .in('id', tagIds)
+          setTags(tagsErr ? [] : ((tagRows ?? []) as Tag[]))
+        }
+      }
     } catch (error: any) {
       toast.error(error.message)
       navigate('/documents')
@@ -77,13 +105,14 @@ export function DocumentEditorPage() {
     }
   }
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!title.trim()) { toast.error('Please enter a title'); return }
     setSaving(true)
     try {
+      const contentToSave = content
       if (id) {
         const { error } = await supabase.from('documents')
-          .update({ title: title.trim(), content })
+          .update({ title: title.trim(), content: contentToSave })
           .eq('id', id)
           .eq('user_id', SHARED_WORKSPACE_USER_ID)
         if (error) throw error
@@ -91,34 +120,42 @@ export function DocumentEditorPage() {
       } else {
         const insertPayload: Record<string, any> = {
           title: title.trim(),
-          content,
+          content: contentToSave,
           user_id: SHARED_WORKSPACE_USER_ID,
         }
         if (folderId) insertPayload.folder_id = folderId
-        const { data, error } = await supabase.from('documents')
+        const { data: createdRows, error } = await supabase.from('documents')
           .insert(insertPayload)
-          .select().single()
+          .select()
         if (error) throw error
+        const created = firstOrNull(createdRows)
+        if (!created?.id) throw new Error('Document was created but could not be read back (check RLS).')
         toast.success('Document created')
-        navigate(`/documents/${data.id}/edit`)
+        navigate(`/documents/${created.id}/edit`)
       }
     } catch (error: any) {
       toast.error(error.message)
     } finally {
       setSaving(false)
     }
-  }
+  }, [title, content, id, folderId, navigate])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault()
-        handleSave()
+        void handleSave()
       }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [title, content])
+  }, [handleSave])
+
+  const handleDownloadMarkdown = () => {
+    const name = markdownDownloadFilename(title)
+    const md = buildMarkdownDownload(title, content)
+    triggerDownloadTextFile(name, md)
+  }
 
   if (loading) {
     return (
@@ -153,6 +190,10 @@ export function DocumentEditorPage() {
                 Tags
               </Button>
             )}
+            <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={handleDownloadMarkdown}>
+              <Download className="h-3.5 w-3.5" />
+              Download .md
+            </Button>
             <Button onClick={handleSave} disabled={saving} size="sm" className="gap-1.5">
               <Save className="h-3.5 w-3.5" />
               {saving ? 'Saving…' : 'Save'}
@@ -178,6 +219,7 @@ export function DocumentEditorPage() {
         />
 
         <BlockEditor
+          key={id}
           content={content}
           onUpdate={setContent}
           placeholder="Write something, or type '/' for commands…"

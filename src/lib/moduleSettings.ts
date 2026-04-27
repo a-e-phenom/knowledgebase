@@ -6,6 +6,9 @@ export type ModuleIcon = 'bot' | 'file-text' | 'sparkles' | 'book-open' | 'zap' 
 
 export type ModuleOutputMode = 'chat' | 'structured'
 
+/** When outputMode is structured: grid of cards vs one markdown document. */
+export type ModuleStructuredLayout = 'cards' | 'single_document'
+
 export type ModuleKnowledge = {
   allFiles: boolean
   documentIds: string[]
@@ -26,10 +29,12 @@ export type Module = {
   /** How assistant replies are shown; default chat */
   outputMode?: ModuleOutputMode
   /**
-   * When outputMode is structured: extra instructions for what each card should contain.
-   * The model is told to reply as JSON `{ cards: [{ title, body }] }`.
+   * When outputMode is structured: extra instructions for cards or for the single document.
+   * Cards: JSON `{ cards: [{ title, body }] }`. Single document: JSON `{ document: "markdown" }`.
    */
   structuredOutputPrompt?: string
+  /** Structured mode only; default cards. */
+  structuredLayout?: ModuleStructuredLayout
   /** Which documents/folders the module can use as knowledge. */
   knowledge?: ModuleKnowledge
   /** built-in modules can't be deleted */
@@ -86,8 +91,11 @@ function normalizeKnowledge(knowledge?: Partial<ModuleKnowledge> | null): Module
 }
 
 function normalizeModule(module: Module): Module {
+  const structuredLayout: ModuleStructuredLayout =
+    module.structuredLayout === 'single_document' ? 'single_document' : 'cards'
   return {
     ...module,
+    structuredLayout: module.outputMode === 'structured' ? structuredLayout : undefined,
     knowledge: normalizeKnowledge(module.knowledge),
   }
 }

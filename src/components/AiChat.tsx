@@ -27,12 +27,16 @@ import {
   Loader2,
   LayoutPanelLeft,
   FilePlus,
+  Download,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { marked } from 'marked'
 import { getDocumentTextForAi } from '@/lib/documentTextForAi'
-import { parseStructuredAssistantResponse } from '@/lib/structuredModuleOutput'
-import type { ModuleKnowledge, ModuleOutputMode } from '@/lib/moduleSettings'
+import {
+  parseStructuredAssistantResponse,
+  type ParsedStructured,
+} from '@/lib/structuredModuleOutput'
+import type { ModuleKnowledge, ModuleOutputMode, ModuleStructuredLayout } from '@/lib/moduleSettings'
 import {
   insertMarkdownDocument,
   structuredCardsToMarkdown,
@@ -80,6 +84,8 @@ export type AiChatProps = {
   inputPlaceholder?: string
   /** Structured mode uses a side-by-side sources + output workspace instead of chat */
   outputMode?: ModuleOutputMode
+  /** When structured: cards grid vs one markdown document (from module settings). */
+  structuredLayout?: ModuleStructuredLayout
   /** Optional icon shown next to the module title in the header */
   assistantIcon?: ReactNode
   knowledge?: ModuleKnowledge
@@ -95,6 +101,7 @@ export function AiChat({
   emptySubtitle = "Type @ to attach a specific document as context",
   inputPlaceholder = 'Ask a question… type @ to reference a document',
   outputMode = 'chat',
+  structuredLayout = 'cards',
   assistantIcon,
   knowledge,
 }: AiChatProps) {
@@ -158,10 +165,14 @@ export function AiChat({
   const [sourceQuery, setSourceQuery] = useState('')
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([])
   const [structuredOutput, setStructuredOutput] = useState<{
-    cards: { title: string; body: string }[] | null
+    parsed: ParsedStructured | null
     raw: string
     parseFailed: boolean
   } | null>(null)
+
+  useEffect(() => {
+    setStructuredOutput(null)
+  }, [structuredLayout, settingsPath])
 
   const [saveDocOpen, setSaveDocOpen] = useState(false)
   const [saveDocTitle, setSaveDocTitle] = useState('')
@@ -410,12 +421,12 @@ export function AiChat({
           { role: 'user', content: userContent },
         ],
         temperature: 0.35,
-        max_tokens: 2048,
+        max_tokens: structuredLayout === 'single_document' ? 8192 : 2048,
       })
       const rawAssistant = json.choices?.[0]?.message?.content ?? 'No response.'
-      const parsed = parseStructuredAssistantResponse(rawAssistant)
+      const parsed = parseStructuredAssistantResponse(rawAssistant, structuredLayout)
       setStructuredOutput({
-        cards: parsed,
+        parsed,
         raw: rawAssistant,
         parseFailed: !parsed,
       })
@@ -502,7 +513,9 @@ export function AiChat({
   ) : outputMode === 'structured' ? (
     <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
       <LayoutPanelLeft className="h-3 w-3 shrink-0" />
-      Sources and structured output
+      {structuredLayout === 'single_document'
+        ? 'Sources and generated document'
+        : 'Sources and structured output'}
     </p>
   ) : (
     <p className="text-xs text-muted-foreground flex items-center gap-1">
@@ -515,17 +528,39 @@ export function AiChat({
   if (outputMode === 'structured') {
     const canGenerate = selectedSourceIds.length > 0 && !isLoading
 
-    const saveStructuredOutputAsDocument = () => {
-      if (!structuredOutput) return
-      let md: string
+    const structuredOutputToMarkdown = (): string | null => {
+      if (!structuredOutput) return null
       if (structuredOutput.parseFailed) {
-        md = `# ${title} — output\n\n${structuredOutput.raw}`
-      } else if (structuredOutput.cards?.length) {
-        md = structuredCardsToMarkdown(structuredOutput.cards, `${title} — output`)
-      } else {
-        md = `# ${title} — output\n\n_(No content)_\n`
+        return `# ${title} — output\n\n${structuredOutput.raw}`
       }
+      if (structuredOutput.parsed?.layout === 'single_document') {
+        return structuredOutput.parsed.document
+      }
+      if (structuredOutput.parsed?.layout === 'cards' && structuredOutput.parsed.cards.length > 0) {
+        return structuredCardsToMarkdown(structuredOutput.parsed.cards, `${title} — output`)
+      }
+      return `# ${title} — output\n\n_(No content)_\n`
+    }
+
+    const saveStructuredOutputAsDocument = () => {
+      const md = structuredOutputToMarkdown()
+      if (!md) return
       openSaveMarkdownDialog(`${title} — Output`, md)
+    }
+
+    const downloadStructuredOutputMd = () => {
+      const md = structuredOutputToMarkdown()
+      if (!md) return
+      const stem = suggestedMarkdownTitle(`${title} — output`).replace(/[/\\?%*:|"<>]/g, '-')
+      const filename = `${stem}.md`
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.rel = 'noopener'
+      a.click()
+      URL.revokeObjectURL(url)
     }
 
     return (
@@ -618,7 +653,7 @@ export function AiChat({
             </ScrollArea>
             <div className="shrink-0 space-y-3 border-t bg-background p-4">
               <p className="text-xs text-muted-foreground">
-                What to extract and how cards are shaped is defined in{' '}
+                What to extract and how output is shaped is defined in{' '}
                 {settingsPath ? (
                   <Link
                     to={settingsPath}
@@ -629,7 +664,7 @@ export function AiChat({
                 ) : (
                   <span className="font-medium text-foreground">module settings</span>
                 )}{' '}
-                (agent instructions and structured output).
+                (agent instructions and structured output{structuredLayout === 'single_document' ? ' — single document' : ''}).
               </p>
               <Button
                 className="w-full"
@@ -657,20 +692,36 @@ export function AiChat({
               <div className="min-w-0">
                 <h2 className="text-sm font-semibold">Output</h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Structured cards from the model (JSON format from module settings).
+                  {structuredLayout === 'single_document'
+                    ? 'One markdown document from the model (JSON with a document field, per module settings).'
+                    : 'Structured cards from the model (JSON with a cards array, per module settings).'}
                 </p>
               </div>
               {structuredOutput ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0 gap-1.5"
-                  onClick={saveStructuredOutputAsDocument}
-                >
-                  <FilePlus className="h-4 w-4" />
-                  Save as document
-                </Button>
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                  {structuredLayout === 'single_document' ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5"
+                      onClick={downloadStructuredOutputMd}
+                    >
+                      <Download className="h-4 w-4" />
+                      Download MD file
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={saveStructuredOutputAsDocument}
+                  >
+                    <FilePlus className="h-4 w-4" />
+                    Save as document
+                  </Button>
+                </div>
               ) : null}
             </div>
             <ScrollArea className="min-h-0 flex-1">
@@ -704,9 +755,20 @@ export function AiChat({
                       </CardContent>
                     </Card>
                   </div>
-                ) : structuredOutput.cards && structuredOutput.cards.length > 0 ? (
+                ) : structuredOutput.parsed?.layout === 'single_document' ? (
+                  <Card className="max-w-4xl shadow-sm">
+                    <CardContent className="py-5 px-5 md:py-6 md:px-6">
+                      <div
+                        className="prose prose-sm dark:prose-invert max-w-none leading-relaxed text-card-foreground"
+                        dangerouslySetInnerHTML={{
+                          __html: marked.parse(structuredOutput.parsed.document) as string,
+                        }}
+                      />
+                    </CardContent>
+                  </Card>
+                ) : structuredOutput.parsed?.layout === 'cards' && structuredOutput.parsed.cards.length > 0 ? (
                   <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                    {structuredOutput.cards.map((c, i) => (
+                    {structuredOutput.parsed.cards.map((c, i) => (
                       <Card key={`out-${i}`} className="overflow-hidden">
                         <CardHeader className="py-3 pb-2 space-y-0">
                           <CardTitle className="text-base font-semibold leading-snug">
@@ -725,7 +787,7 @@ export function AiChat({
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground">No cards returned.</p>
+                  <p className="text-sm text-muted-foreground">No content returned.</p>
                 )}
               </div>
             </ScrollArea>

@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { getDocumentTextForAi } from '@/lib/documentTextForAi'
+import { firstOrNull, isLikelyDatabaseUuid } from '@/lib/supabaseQuery'
 import { buildStructuredOutputSystemSuffix } from '@/lib/structuredModuleOutput'
 import { fetchModules, getModule, type Module } from '@/lib/moduleSettings'
 import { AiChat } from '@/components/AiChat'
@@ -27,13 +28,18 @@ export function DynamicModulePage({ id: propId }: Props) {
 
     const loadDocInstructions = async (docId: string, fallback: string) => {
       try {
-        const { data, error } = await supabase
+        if (!isLikelyDatabaseUuid(docId)) {
+          if (alive) setSystemPrompt(fallback)
+          return
+        }
+        const { data: rows, error } = await supabase
           .from('documents')
           .select('title, content, file_url, file_type, file_name')
           .eq('id', docId)
-          .maybeSingle()
+          .limit(1)
 
         if (!alive) return
+        const data = firstOrNull(rows)
         if (error || !data) {
           setSystemPrompt(fallback)
           return
@@ -83,7 +89,10 @@ export function DynamicModulePage({ id: propId }: Props) {
   const effectiveSystemPrompt = useMemo(() => {
     if (systemPrompt === null || !mod) return ''
     if (mod.outputMode === 'structured') {
-      return systemPrompt + buildStructuredOutputSystemSuffix(mod.structuredOutputPrompt ?? '')
+      return systemPrompt + buildStructuredOutputSystemSuffix(
+        mod.structuredOutputPrompt ?? '',
+        mod.structuredLayout ?? 'cards',
+      )
     }
     return systemPrompt
   }, [mod, systemPrompt])
@@ -97,6 +106,7 @@ export function DynamicModulePage({ id: propId }: Props) {
   }
 
   const outputMode = mod.outputMode ?? 'chat'
+  const structuredLayout = outputMode === 'structured' ? (mod.structuredLayout ?? 'cards') : 'cards'
 
   return (
     <AiChat
@@ -106,6 +116,7 @@ export function DynamicModulePage({ id: propId }: Props) {
       assistantIcon={<ModuleIconComponent icon={mod.icon} className="h-4 w-4" />}
       systemPrompt={effectiveSystemPrompt}
       outputMode={outputMode}
+      structuredLayout={structuredLayout}
       knowledge={mod.knowledge}
       emptyTitle={`Ask me anything — ${mod.label}`}
       emptySubtitle={

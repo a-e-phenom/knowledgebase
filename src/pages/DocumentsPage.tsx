@@ -37,6 +37,12 @@ import { storageObjectPathFromPublicUrl } from '@/lib/storagePath'
 import { UploadedFileViewer } from '@/components/UploadedFileViewer'
 import { ExplorerTruncatedLabel } from '@/components/ExplorerTruncatedLabel'
 import { DocumentFileIcon, isPdfDocument } from '@/components/DocumentFileIcon'
+import { firstOrNull } from '@/lib/supabaseQuery'
+import {
+  buildMarkdownDownload,
+  markdownDownloadFilename,
+  triggerDownloadTextFile,
+} from '@/lib/markdown'
 
 type Document = {
   id: string
@@ -112,7 +118,8 @@ export function DocumentsPage() {
       if (folderRes.error) throw folderRes.error
       if (docRes.error) throw docRes.error
 
-      setAllFolders(folderRes.data || [])
+      const folderRows: FolderItem[] = folderRes.data || []
+      setAllFolders(folderRows)
       setAllDocuments(docRes.data || [])
 
       // Auto-select first doc if none selected
@@ -120,20 +127,34 @@ export function DocumentsPage() {
         setSelectedDocId(docRes.data[0].id)
       }
 
-      // Fetch tags
+      // Fetch tags (two queries — avoids PostgREST embed edge cases / PGRST116)
       if (docRes.data && docRes.data.length > 0) {
-        const { data: tagData, error: tagError } = await supabase
+        const docIds = docRes.data.map(d => d.id)
+        const { data: linkRows, error: linkErr } = await supabase
           .from('document_tags')
-          .select('document_id, tag_id, tags(*)')
-          .in('document_id', docRes.data.map(d => d.id))
+          .select('document_id, tag_id')
+          .in('document_id', docIds)
 
-        if (!tagError && tagData) {
-          const tagsByDoc: Record<string, Tag[]> = {}
-          tagData.forEach((dt: any) => {
-            if (!tagsByDoc[dt.document_id]) tagsByDoc[dt.document_id] = []
-            tagsByDoc[dt.document_id].push(dt.tags)
-          })
-          setDocumentTags(tagsByDoc)
+        if (!linkErr && linkRows?.length) {
+          const tagIds = [...new Set(linkRows.map((r) => r.tag_id))]
+          const { data: tagRows, error: tagsErr } = await supabase
+            .from('tags')
+            .select('*')
+            .in('id', tagIds)
+
+          if (!tagsErr && tagRows) {
+            const tagById = new Map(tagRows.map((t) => [t.id, t as Tag]))
+            const tagsByDoc: Record<string, Tag[]> = {}
+            linkRows.forEach((row) => {
+              const tag = tagById.get(row.tag_id)
+              if (!tag) return
+              if (!tagsByDoc[row.document_id]) tagsByDoc[row.document_id] = []
+              tagsByDoc[row.document_id].push(tag)
+            })
+            setDocumentTags(tagsByDoc)
+          }
+        } else if (!linkErr) {
+          setDocumentTags({})
         }
       }
     } catch (error: any) {
@@ -163,17 +184,25 @@ export function DocumentsPage() {
   }, [])
   useEffect(() => { resizeTitle() }, [editTitle, resizeTitle])
 
+  const handleDownloadMarkdown = useCallback(() => {
+    if (!selectedDoc || selectedDoc.file_url) return
+    const name = markdownDownloadFilename(editTitle || selectedDoc.title)
+    const md = buildMarkdownDownload(editTitle || selectedDoc.title, editContent)
+    triggerDownloadTextFile(name, md)
+  }, [selectedDoc, editTitle, editContent])
+
   const handleSave = useCallback(async () => {
     if (!selectedDocId || !editTitle.trim()) { toast.error('Title is required'); return }
     setSaving(true)
     try {
+      const contentToSave = editContent
       const { error } = await supabase.from('documents')
-        .update({ title: editTitle.trim(), content: editContent })
+        .update({ title: editTitle.trim(), content: contentToSave })
         .eq('id', selectedDocId)
       if (error) throw error
       toast.success('Saved')
       // Update local state so sidebar reflects title change
-      setAllDocuments(prev => prev.map(d => d.id === selectedDocId ? { ...d, title: editTitle.trim(), content: editContent } : d))
+      setAllDocuments(prev => prev.map(d => d.id === selectedDocId ? { ...d, title: editTitle.trim(), content: contentToSave } : d))
     } catch (error: any) {
       toast.error(error.message)
     } finally {
@@ -201,8 +230,10 @@ export function DocumentsPage() {
         user_id: SHARED_WORKSPACE_USER_ID,
       }
       if (folderId) payload.folder_id = folderId
-      const { data, error } = await supabase.from('documents').insert(payload).select().single()
+      const { data: rows, error } = await supabase.from('documents').insert(payload).select()
       if (error) throw error
+      const data = firstOrNull(rows)
+      if (!data?.id) throw new Error('Document was created but could not be read back (check RLS).')
       await fetchData()
       setSelectedDocId(data.id)
       if (folderId) setExpandedFolders(prev => new Set(prev).add(folderId))
@@ -351,17 +382,22 @@ export function DocumentsPage() {
       return
     }
     const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(fileName)
-    const { data: inserted, error: dbError } = await supabase.from('documents').insert({
+    const { data: insertedRows, error: dbError } = await supabase.from('documents').insert({
       title: file.name,
       file_url: publicUrl,
       file_type: file.type || 'application/octet-stream',
       file_name: file.name,
       folder_id: uploadFolderId,
       user_id: SHARED_WORKSPACE_USER_ID,
-    }).select().single()
+    }).select()
     if (dbError) { toast.error(dbError.message); return }
+    const inserted = firstOrNull(insertedRows)
+    if (!inserted?.id) {
+      toast.error('Upload saved but the document row could not be read back (check RLS).')
+      return
+    }
     toast.success('File uploaded')
-    if (inserted?.id) setSelectedDocId(inserted.id)
+    setSelectedDocId(inserted.id)
     e.target.value = ''
     setIsUploadDialogOpen(false)
     setUploadFolderId(null)
@@ -634,10 +670,22 @@ export function DocumentsPage() {
                   </>
                 )}
                 {!selectedDoc.file_url && (
-                  <Button size="sm" variant="default" className="gap-1.5 shrink-0" onClick={handleSave} disabled={saving}>
-                    <Save className="h-3.5 w-3.5" />
-                    {saving ? 'Saving…' : 'Save'}
-                  </Button>
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 shrink-0"
+                      onClick={handleDownloadMarkdown}
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      Download .md
+                    </Button>
+                    <Button size="sm" variant="default" className="gap-1.5 shrink-0" onClick={handleSave} disabled={saving}>
+                      <Save className="h-3.5 w-3.5" />
+                      {saving ? 'Saving…' : 'Save'}
+                    </Button>
+                  </>
                 )}
                 <Button
                   size="sm"
