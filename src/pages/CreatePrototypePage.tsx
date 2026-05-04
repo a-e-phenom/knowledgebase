@@ -211,6 +211,9 @@ export function CreatePrototypePage() {
           </Badge>
         </div>
         <span className="hidden text-xs text-muted-foreground sm:inline">Chat · Preview</span>
+        <Button variant="ghost" size="sm" className="h-8 shrink-0 px-2 text-xs font-medium" asChild>
+          <Link to="/qa">QA</Link>
+        </Button>
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">

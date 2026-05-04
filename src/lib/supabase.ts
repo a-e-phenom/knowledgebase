@@ -153,6 +153,23 @@ export type Database = {
           created_at?: string
         }
       }
+      workspace_app_data: {
+        Row: {
+          id: string
+          data: Record<string, unknown>
+          updated_at: string
+        }
+        Insert: {
+          id: string
+          data: Record<string, unknown>
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          data?: Record<string, unknown>
+          updated_at?: string
+        }
+      }
     }
   }
 }

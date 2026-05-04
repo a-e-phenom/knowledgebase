@@ -121,7 +121,7 @@ export function DynamicModulePage({ id: propId }: Props) {
       emptyTitle={`Ask me anything — ${mod.label}`}
       emptySubtitle={
         outputMode === 'structured'
-          ? 'Select documents, then Generate. Instructions live in module settings.'
+          ? 'Select folders or documents in the sidebar, then Generate. Instructions live in module settings.'
           : 'Type @ to attach a document as context'
       }
       inputPlaceholder="Ask a question… type @ to reference a document"

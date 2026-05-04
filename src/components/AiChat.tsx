@@ -8,7 +8,6 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -45,6 +44,7 @@ import {
 import { SHARED_WORKSPACE_USER_ID } from '@/lib/sharedWorkspace'
 import { requestOpenAIChatCompletion } from '@/lib/openaiChat'
 import { filterDocumentsByKnowledge } from '@/lib/moduleKnowledge'
+import { StructuredSourcesTree } from '@/components/StructuredSourcesTree'
 
 marked.use({ breaks: true })
 
@@ -61,6 +61,7 @@ export type Document = {
 type FolderItem = {
   id: string
   parent_id: string | null
+  name: string
 }
 
 type AttachedDoc = { id: string; title: string }
@@ -259,7 +260,7 @@ export function AiChat({
         .order('updated_at', { ascending: false }),
       supabase
         .from('folders')
-        .select('id, parent_id')
+        .select('id, parent_id, name')
         .eq('user_id', SHARED_WORKSPACE_USER_ID),
     ])
     setDocuments(docRes.data || [])
@@ -271,21 +272,6 @@ export function AiChat({
       !attachedDocs.find((a) => a.id === d.id) &&
       d.title.toLowerCase().includes(pickerQuery.toLowerCase()),
   )
-
-  const filteredSources = availableDocuments.filter((d) => {
-    const q = sourceQuery.trim().toLowerCase()
-    if (!q) return true
-    return (
-      d.title.toLowerCase().includes(q) ||
-      (d.file_name?.toLowerCase().includes(q) ?? false)
-    )
-  })
-
-  const toggleSource = (id: string) => {
-    setSelectedSourceIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    )
-  }
 
   useEffect(() => {
     const allowedIds = new Set(availableDocuments.map((doc) => doc.id))
@@ -587,9 +573,14 @@ export function AiChat({
                 {headerSubtitle}
               </div>
             </div>
+            <Link to="/qa">
+              <Button variant="ghost" size="sm" className="h-8 shrink-0 px-2 text-xs font-medium">
+                QA
+              </Button>
+            </Link>
             {settingsPath && (
               <Link to={settingsPath}>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground">
+                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-muted-foreground">
                   <Settings className="h-4 w-4" />
                 </Button>
               </Link>
@@ -604,53 +595,24 @@ export function AiChat({
               <div>
                 <h2 className="text-sm font-semibold">Sources</h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Choose documents to include as context for this run.
+                  Pick folders (entire subtree) or individual documents. Only documents allowed for this module are
+                  listed.
                 </p>
               </div>
               <Input
-                placeholder="Search documents…"
+                placeholder="Search folders and documents…"
                 value={sourceQuery}
                 onChange={(e) => setSourceQuery(e.target.value)}
                 className="h-9"
               />
             </div>
-            <ScrollArea className="min-h-0 flex-1">
-              <div className="space-y-0.5 p-2">
-                {filteredSources.length === 0 ? (
-                  <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-                    No documents match your search.
-                  </p>
-                ) : (
-                  filteredSources.map((doc) => {
-                    const checked = selectedSourceIds.includes(doc.id)
-                    return (
-                      <label
-                        key={doc.id}
-                        className="flex cursor-pointer items-start gap-3 rounded-md px-2 py-2.5 text-left text-sm transition-colors hover:bg-accent/60"
-                      >
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={() => toggleSource(doc.id)}
-                          className="mt-0.5"
-                          aria-label={`Select ${doc.title}`}
-                        />
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-start gap-2">
-                            <FileText className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
-                            <span className="leading-snug break-words">{doc.title}</span>
-                          </span>
-                          {doc.file_name ? (
-                            <span className="mt-0.5 block text-xs text-muted-foreground truncate pl-6">
-                              {doc.file_name}
-                            </span>
-                          ) : null}
-                        </span>
-                      </label>
-                    )
-                  })
-                )}
-              </div>
-            </ScrollArea>
+            <StructuredSourcesTree
+              documents={availableDocuments}
+              folders={folders}
+              selectedSourceIds={selectedSourceIds}
+              setSelectedSourceIds={setSelectedSourceIds}
+              sourceQuery={sourceQuery}
+            />
             <div className="shrink-0 space-y-3 border-t bg-background p-4">
               <p className="text-xs text-muted-foreground">
                 What to extract and how output is shaped is defined in{' '}
@@ -823,9 +785,14 @@ export function AiChat({
               {headerSubtitle}
             </div>
           </div>
+          <Link to="/qa">
+            <Button variant="ghost" size="sm" className="h-8 shrink-0 px-2 text-xs font-medium">
+              QA
+            </Button>
+          </Link>
           {settingsPath && (
             <Link to={settingsPath}>
-              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground">
+              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-muted-foreground">
                 <Settings className="h-4 w-4" />
               </Button>
             </Link>

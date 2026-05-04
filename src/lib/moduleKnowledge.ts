@@ -10,7 +10,8 @@ type DocumentLike = {
   folder_id: string | null
 }
 
-function getDescendantFolderIds(folderIds: string[], folders: FolderLike[]) {
+/** Folder id set: each seed plus every descendant folder (for subtree document checks). */
+export function getDescendantFolderIds(folderIds: string[], folders: FolderLike[]) {
   const byParent = new Map<string | null, FolderLike[]>()
   folders.forEach((folder) => {
     const siblings = byParent.get(folder.parent_id) ?? []
