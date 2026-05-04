@@ -403,6 +403,7 @@ export function QAPage() {
   const [findingTicketLink, setFindingTicketLink] = useState('')
   const [findingScreenshots, setFindingScreenshots] = useState<QaScreenshot[]>([])
   const [screenshotBusy, setScreenshotBusy] = useState(false)
+  const [screenshotLightbox, setScreenshotLightbox] = useState<{ dataUrl: string; name: string } | null>(null)
 
   const [commentsFindingId, setCommentsFindingId] = useState<string | null>(null)
   const [commentAuthor, setCommentAuthor] = useState(() => loadLastAuthor())
@@ -835,14 +836,14 @@ export function QAPage() {
       </Dialog>
 
       <Dialog open={findingDialogOpen} onOpenChange={setFindingDialogOpen}>
-        <DialogContent className="max-h-[min(92vh,44rem)] gap-0 overflow-hidden p-0 sm:max-w-xl">
-          <DialogHeader className="border-b px-6 py-4 text-left">
+        <DialogContent className="flex max-h-[min(92vh,44rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+          <DialogHeader className="shrink-0 border-b px-6 py-4 pr-14 text-left">
             <DialogTitle>{editingFindingId ? 'Edit QA item' : 'Add QA item'}</DialogTitle>
             <DialogDescription>
               Details, links, assignee, and screenshots. Saved to your shared workspace (Supabase).
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 overflow-y-auto px-6 py-4">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 py-4">
             <div className="space-y-2">
               <Label htmlFor="qa-finding-title">Title</Label>
               <Input
@@ -968,10 +969,16 @@ export function QAPage() {
                 <div className="flex flex-wrap gap-2 pt-1">
                   {findingScreenshots.map((s) => (
                     <div key={s.id} className="group relative h-20 w-28 overflow-hidden rounded-md border bg-muted">
-                      <img src={s.dataUrl} alt="" className="h-full w-full object-cover" />
+                      <img src={s.dataUrl} alt="" className="pointer-events-none h-full w-full object-cover" />
                       <button
                         type="button"
-                        className="absolute right-1 top-1 rounded bg-background/90 p-0.5 opacity-0 shadow transition-opacity group-hover:opacity-100"
+                        className="absolute inset-0 z-0 rounded-md ring-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={() => setScreenshotLightbox({ dataUrl: s.dataUrl, name: s.name })}
+                        aria-label={`View ${s.name} full screen`}
+                      />
+                      <button
+                        type="button"
+                        className="absolute right-1 top-1 z-10 rounded bg-background/90 p-0.5 opacity-0 shadow transition-opacity group-hover:opacity-100"
                         aria-label="Remove screenshot"
                         onClick={() => removeScreenshot(s.id)}
                       >
@@ -1020,7 +1027,7 @@ export function QAPage() {
               ) : null}
             </div>
           </div>
-          <DialogFooter className="border-t px-6 py-4">
+          <DialogFooter className="shrink-0 border-t bg-background px-6 py-4">
             <Button type="button" variant="ghost" onClick={() => setFindingDialogOpen(false)}>
               Cancel
             </Button>
@@ -1028,6 +1035,26 @@ export function QAPage() {
               {editingFindingId ? 'Save' : 'Add QA item'}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!screenshotLightbox} onOpenChange={(open) => !open && setScreenshotLightbox(null)}>
+        <DialogContent
+          showCloseButton
+          className={cn(
+            'flex h-[100dvh] max-h-[100dvh] w-full max-w-full flex-col gap-0 border-0 bg-background/95 p-0 shadow-none backdrop-blur-sm sm:max-w-full sm:rounded-none',
+            'top-0 left-0 translate-x-0 translate-y-0',
+          )}
+        >
+          <div className="flex min-h-0 flex-1 items-center justify-center p-4 pt-14 sm:p-8 sm:pt-16">
+            {screenshotLightbox ? (
+              <img
+                src={screenshotLightbox.dataUrl}
+                alt={screenshotLightbox.name}
+                className="max-h-[min(calc(100dvh-6rem),100%)] max-w-full object-contain"
+              />
+            ) : null}
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -1502,15 +1529,15 @@ export function QAPage() {
                         {f.screenshots.length > 0 ? (
                           <div className="flex flex-wrap gap-2">
                             {f.screenshots.map((s) => (
-                              <a
+                              <button
                                 key={s.id}
-                                href={s.dataUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="block h-28 w-40 overflow-hidden rounded-lg border bg-muted ring-offset-2 hover:ring-2 hover:ring-ring"
+                                type="button"
+                                className="block h-28 w-40 overflow-hidden rounded-lg border bg-muted text-left ring-offset-2 outline-none transition-shadow hover:ring-2 hover:ring-ring focus-visible:ring-2 focus-visible:ring-ring"
+                                onClick={() => setScreenshotLightbox({ dataUrl: s.dataUrl, name: s.name })}
+                                aria-label={`View screenshot ${s.name} full screen`}
                               >
-                                <img src={s.dataUrl} alt={s.name} className="h-full w-full object-cover" />
-                              </a>
+                                <img src={s.dataUrl} alt="" className="h-full w-full object-cover" />
+                              </button>
                             ))}
                           </div>
                         ) : null}
@@ -1643,7 +1670,7 @@ export function QAPage() {
                     </CardHeader>
                     <CardContent className="pt-0">
                       <Button variant="secondary" size="sm" className="w-full" asChild>
-                        <Link to={`/qa/${s.id}`}>Open workspace</Link>
+                        <Link to={`/qa/${s.id}`}>Open</Link>
                       </Button>
                     </CardContent>
                   </Card>
