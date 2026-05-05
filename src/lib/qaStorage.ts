@@ -14,34 +14,33 @@ export type QaEnvironment = 'STG' | 'STGIR' | 'INTQA' | 'PROD'
 
 export const QA_ENVIRONMENTS: QaEnvironment[] = ['STG', 'STGIR', 'INTQA', 'PROD']
 
-export type QaStatus = 'open' | 'triaged' | 'in_progress' | 'blocked' | 'verified' | 'wont_fix'
+export type QaStatus = 'not_started' | 'in_progress' | 'blocked' | 'solved'
 
-export const QA_STATUSES: QaStatus[] = [
-  'open',
-  'triaged',
-  'in_progress',
-  'blocked',
-  'verified',
-  'wont_fix',
-]
+export const QA_STATUSES: QaStatus[] = ['not_started', 'in_progress', 'blocked', 'solved']
 
 export function qaStatusLabel(s: QaStatus): string {
   switch (s) {
-    case 'open':
-      return 'Open'
-    case 'triaged':
-      return 'Triaged'
+    case 'not_started':
+      return 'Not started'
     case 'in_progress':
       return 'In progress'
     case 'blocked':
       return 'Blocked'
-    case 'verified':
-      return 'Verified'
-    case 'wont_fix':
-      return "Won't fix"
+    case 'solved':
+      return 'Solved'
     default:
       return s
   }
+}
+
+/** Map persisted / legacy status strings to the current four statuses. */
+export function normalizeQaStatus(raw: unknown): QaStatus {
+  if (raw === 'not_started' || raw === 'in_progress' || raw === 'blocked' || raw === 'solved') {
+    return raw
+  }
+  if (typeof raw !== 'string') return 'not_started'
+  if (raw === 'verified') return 'solved'
+  return 'not_started'
 }
 
 export type QaComment = {
@@ -72,6 +71,8 @@ export type QaFinding = {
   figmaLink: string
   ticketLink: string
   assignee: string
+  /** Optional person who filed the item (shown in card footer). */
+  reporter: string
   createdAt: string
   updatedAt: string
 }
@@ -93,17 +94,6 @@ export function defaultQaState(): QaState {
 
 function isPriority(x: unknown): x is QaPriority {
   return x === 'low' || x === 'medium' || x === 'high' || x === 'critical'
-}
-
-function isStatus(x: unknown): x is QaStatus {
-  return (
-    x === 'open' ||
-    x === 'triaged' ||
-    x === 'in_progress' ||
-    x === 'blocked' ||
-    x === 'verified' ||
-    x === 'wont_fix'
-  )
 }
 
 function isEnvironment(x: unknown): x is QaEnvironment {
@@ -135,7 +125,7 @@ function parseFinding(raw: unknown): QaFinding | null {
   const description = typeof o.description === 'string' ? o.description : ''
   const tags = Array.isArray(o.tags) ? o.tags.filter((t): t is string => typeof t === 'string') : []
   const priority = isPriority(o.priority) ? o.priority : 'medium'
-  const status = isStatus(o.status) ? o.status : 'open'
+  const status = normalizeQaStatus(o.status)
   const environment = isEnvironment(o.environment) ? o.environment : 'STG'
   const commentsRaw = Array.isArray(o.comments) ? o.comments : []
   const comments = commentsRaw.map(parseComment).filter((c): c is QaComment => c !== null)
@@ -146,6 +136,7 @@ function parseFinding(raw: unknown): QaFinding | null {
   const figmaLink = typeof o.figmaLink === 'string' ? o.figmaLink : ''
   const ticketLink = typeof o.ticketLink === 'string' ? o.ticketLink : ''
   const assignee = typeof o.assignee === 'string' ? o.assignee : ''
+  const reporter = typeof o.reporter === 'string' ? o.reporter : ''
   return {
     id: o.id,
     title: o.title,
@@ -159,6 +150,7 @@ function parseFinding(raw: unknown): QaFinding | null {
     figmaLink,
     ticketLink,
     assignee,
+    reporter,
     createdAt,
     updatedAt,
   }

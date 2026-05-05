@@ -91,6 +91,9 @@ const LAST_AUTHOR_KEY = 'docHub-qa-last-comment-author'
 /** Filter key for findings with no assignee */
 const UNASSIGNED = '__unassigned__'
 
+/** Filter key for findings with no reporter set */
+const NO_REPORTER = '__no_reporter__'
+
 /** Slightly rounded chips on finding cards (override badge `rounded-full`). */
 const cardChipRounded = 'rounded-md'
 
@@ -121,23 +124,29 @@ function normalizeLink(raw: string): string {
   return `https://${t}`
 }
 
-function statusBadgeClass(s: QaStatus): string {
+/** Filled circle color for status chips (chip itself is white + gray outline). */
+function statusDotClass(s: QaStatus): string {
   switch (s) {
-    case 'open':
-      return 'border-slate-500/30 bg-slate-500/10 text-slate-800 dark:text-slate-200'
-    case 'triaged':
-      return 'border-violet-500/30 bg-violet-500/10 text-violet-900 dark:text-violet-200'
+    case 'not_started':
+      return 'bg-neutral-400 dark:bg-neutral-500'
     case 'in_progress':
-      return 'border-blue-500/30 bg-blue-500/10 text-blue-800 dark:text-blue-200'
+      return 'bg-indigo-600 dark:bg-indigo-500'
     case 'blocked':
-      return 'border-destructive/40 bg-destructive/10 text-destructive'
-    case 'verified':
-      return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200'
-    case 'wont_fix':
-      return 'border-muted-foreground/40 bg-muted text-muted-foreground'
+      return 'bg-red-500'
+    case 'solved':
+      return 'bg-emerald-600 dark:bg-emerald-500'
     default:
-      return ''
+      return 'bg-muted-foreground'
   }
+}
+
+function StatusRow({ status }: { status: QaStatus }) {
+  return (
+    <span className="flex items-center gap-2">
+      <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', statusDotClass(status))} aria-hidden />
+      <span>{qaStatusLabel(status)}</span>
+    </span>
+  )
 }
 
 function priorityBadgeClass(p: QaPriority): string {
@@ -163,6 +172,19 @@ function formatTime(iso: string) {
       hour: 'numeric',
       minute: '2-digit',
     })
+  } catch {
+    return ''
+  }
+}
+
+/** e.g. `4 May, 17:15` for card footers */
+function formatReportedFooterTime(iso: string) {
+  try {
+    const d = new Date(iso)
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const
+    const mon = months[d.getMonth()] ?? ''
+    const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+    return `${d.getDate()} ${mon}, ${hm}`
   } catch {
     return ''
   }
@@ -394,11 +416,12 @@ export function QAPage() {
   const [findingTitle, setFindingTitle] = useState('')
   const [findingDescription, setFindingDescription] = useState('')
   const [findingPriority, setFindingPriority] = useState<QaPriority>('medium')
-  const [findingStatus, setFindingStatus] = useState<QaStatus>('open')
+  const [findingStatus, setFindingStatus] = useState<QaStatus>('not_started')
   const [findingEnvironment, setFindingEnvironment] = useState<QaEnvironment>('STG')
   const [findingTags, setFindingTags] = useState<string[]>([])
   const [tagInput, setTagInput] = useState('')
   const [findingAssignee, setFindingAssignee] = useState('')
+  const [findingReporter, setFindingReporter] = useState('')
   const [findingFigmaLink, setFindingFigmaLink] = useState('')
   const [findingTicketLink, setFindingTicketLink] = useState('')
   const [findingScreenshots, setFindingScreenshots] = useState<QaScreenshot[]>([])
@@ -416,6 +439,7 @@ export function QAPage() {
   const [filterStatuses, setFilterStatuses] = useState<QaStatus[]>([])
   const [filterPriorities, setFilterPriorities] = useState<QaPriority[]>([])
   const [filterAssignees, setFilterAssignees] = useState<string[]>([])
+  const [filterReporters, setFilterReporters] = useState<string[]>([])
   const [filterTags, setFilterTags] = useState<string[]>([])
   const [filterEnvironments, setFilterEnvironments] = useState<QaEnvironment[]>([])
 
@@ -466,6 +490,7 @@ export function QAPage() {
     setFilterStatuses([])
     setFilterPriorities([])
     setFilterAssignees([])
+    setFilterReporters([])
     setFilterTags([])
     setFilterEnvironments([])
   }, [sessionIdParam])
@@ -495,6 +520,21 @@ export function QAPage() {
     [activeSession],
   )
 
+  const reporterFilterOptions = useMemo(() => {
+    if (!activeSession) return []
+    const names = new Set<string>()
+    for (const f of activeSession.findings) {
+      const r = (f.reporter ?? '').trim()
+      if (r) names.add(r)
+    }
+    return [...names].sort((a, b) => a.localeCompare(b))
+  }, [activeSession])
+
+  const hasNoReporterFindings = useMemo(
+    () => !!activeSession?.findings.some((f) => !(f.reporter ?? '').trim()),
+    [activeSession],
+  )
+
   const tagFilterOptions = useMemo(() => {
     if (!activeSession) return []
     const tags = new Set<string>()
@@ -509,7 +549,8 @@ export function QAPage() {
     const q = filterSearch.trim().toLowerCase()
     return activeSession.findings.filter((f) => {
       if (q) {
-        const hay = `${f.title}\n${f.description}\n${f.environment}`.toLowerCase()
+        const hay =
+          `${f.title}\n${f.description}\n${f.environment}\n${f.assignee}\n${f.reporter ?? ''}\n${f.tags.join('\n')}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       if (filterStatuses.length > 0 && !filterStatuses.includes(f.status)) return false
@@ -517,6 +558,10 @@ export function QAPage() {
       if (filterAssignees.length > 0) {
         const key = f.assignee.trim() || UNASSIGNED
         if (!filterAssignees.includes(key)) return false
+      }
+      if (filterReporters.length > 0) {
+        const key = (f.reporter ?? '').trim() || NO_REPORTER
+        if (!filterReporters.includes(key)) return false
       }
       if (filterTags.length > 0) {
         const any = filterTags.some((t) => f.tags.includes(t))
@@ -531,6 +576,7 @@ export function QAPage() {
     filterStatuses,
     filterPriorities,
     filterAssignees,
+    filterReporters,
     filterTags,
     filterEnvironments,
   ])
@@ -559,16 +605,18 @@ export function QAPage() {
       filterStatuses.length > 0 ||
       filterPriorities.length > 0 ||
       filterAssignees.length > 0 ||
+      filterReporters.length > 0 ||
       filterTags.length > 0 ||
       filterEnvironments.length > 0
     )
-  }, [filterSearch, filterStatuses, filterPriorities, filterAssignees, filterTags, filterEnvironments])
+  }, [filterSearch, filterStatuses, filterPriorities, filterAssignees, filterReporters, filterTags, filterEnvironments])
 
   const clearFilters = () => {
     setFilterSearch('')
     setFilterStatuses([])
     setFilterPriorities([])
     setFilterAssignees([])
+    setFilterReporters([])
     setFilterTags([])
     setFilterEnvironments([])
   }
@@ -620,11 +668,12 @@ export function QAPage() {
     setFindingTitle('')
     setFindingDescription('')
     setFindingPriority('medium')
-    setFindingStatus('open')
+    setFindingStatus('not_started')
     setFindingEnvironment('STG')
     setFindingTags([])
     setTagInput('')
     setFindingAssignee('')
+    setFindingReporter('')
     setFindingFigmaLink('')
     setFindingTicketLink('')
     setFindingScreenshots([])
@@ -641,6 +690,7 @@ export function QAPage() {
     setFindingTags([...f.tags])
     setTagInput('')
     setFindingAssignee(f.assignee)
+    setFindingReporter(f.reporter ?? '')
     setFindingFigmaLink(f.figmaLink)
     setFindingTicketLink(f.ticketLink)
     setFindingScreenshots([...f.screenshots])
@@ -694,35 +744,56 @@ export function QAPage() {
     const figmaLink = normalizeLink(findingFigmaLink)
     const ticketLink = normalizeLink(findingTicketLink)
     const assignee = findingAssignee.trim()
+    const reporter = findingReporter.trim()
+
+    const pushPersist = (next: QaState) => {
+      queueMicrotask(() => {
+        if (!qaRemoteReady) return
+        if (remoteSaveEnabledRef.current) {
+          void persistQaStateToSupabase(next).catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : 'Unknown error'
+            toast.error('QA sync failed', { description: msg })
+            saveQaState(next)
+          })
+        } else {
+          saveQaState(next)
+        }
+      })
+    }
 
     if (editingFindingId) {
-      setState((prev) => ({
-        ...prev,
-        sessions: prev.sessions.map((s) => {
-          if (s.id !== sessionIdParam) return s
-          return {
-            ...s,
-            findings: s.findings.map((f) =>
-              f.id === editingFindingId
-                ? {
-                    ...f,
-                    title,
-                    description: findingDescription.trim(),
-                    tags: findingTags,
-                    priority: findingPriority,
-                    status: findingStatus,
-                    environment: findingEnvironment,
-                    screenshots: findingScreenshots,
-                    figmaLink,
-                    ticketLink,
-                    assignee,
-                    updatedAt: now,
-                  }
-                : f,
-            ),
-          }
-        }),
-      }))
+      setState((prev) => {
+        const next: QaState = {
+          ...prev,
+          sessions: prev.sessions.map((s) => {
+            if (s.id !== sessionIdParam) return s
+            return {
+              ...s,
+              findings: s.findings.map((f) =>
+                f.id === editingFindingId
+                  ? {
+                      ...f,
+                      title,
+                      description: findingDescription.trim(),
+                      tags: findingTags,
+                      priority: findingPriority,
+                      status: findingStatus,
+                      environment: findingEnvironment,
+                      screenshots: findingScreenshots,
+                      figmaLink,
+                      ticketLink,
+                      assignee,
+                      reporter,
+                      updatedAt: now,
+                    }
+                  : f,
+              ),
+            }
+          }),
+        }
+        pushPersist(next)
+        return next
+      })
       toast.success('Finding updated')
     } else {
       const id = newId()
@@ -739,15 +810,20 @@ export function QAPage() {
         figmaLink,
         ticketLink,
         assignee,
+        reporter,
         createdAt: now,
         updatedAt: now,
       }
-      setState((prev) => ({
-        ...prev,
-        sessions: prev.sessions.map((s) =>
-          s.id === sessionIdParam ? { ...s, findings: [finding, ...s.findings] } : s,
-        ),
-      }))
+      setState((prev) => {
+        const next: QaState = {
+          ...prev,
+          sessions: prev.sessions.map((s) =>
+            s.id === sessionIdParam ? { ...s, findings: [finding, ...s.findings] } : s,
+          ),
+        }
+        pushPersist(next)
+        return next
+      })
       toast.success('Finding added')
     }
     setFindingDialogOpen(false)
@@ -839,9 +915,6 @@ export function QAPage() {
         <DialogContent className="flex max-h-[min(92vh,44rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
           <DialogHeader className="shrink-0 border-b px-6 py-4 pr-14 text-left">
             <DialogTitle>{editingFindingId ? 'Edit QA item' : 'Add QA item'}</DialogTitle>
-            <DialogDescription>
-              Details, links, assignee, and screenshots. Saved to your shared workspace (Supabase).
-            </DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 py-4">
             <div className="space-y-2">
@@ -853,6 +926,17 @@ export function QAPage() {
                 placeholder="Short summary"
               />
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="qa-finding-desc">Description</Label>
+              <Textarea
+                id="qa-finding-desc"
+                value={findingDescription}
+                onChange={(e) => setFindingDescription(e.target.value)}
+                placeholder="Steps, expected vs actual…"
+                rows={3}
+              />
+            </div>
+            <Separator />
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="space-y-2 sm:col-span-1">
                 <Label htmlFor="qa-assignee">Assignee</Label>
@@ -863,7 +947,7 @@ export function QAPage() {
                     className="pl-8"
                     value={findingAssignee}
                     onChange={(e) => setFindingAssignee(e.target.value)}
-                    placeholder="Owner or triage assignee"
+                    placeholder="Assignee"
                   />
                 </div>
               </div>
@@ -890,37 +974,38 @@ export function QAPage() {
                   <SelectContent>
                     {QA_STATUSES.map((s) => (
                       <SelectItem key={s} value={s}>
-                        {qaStatusLabel(s)}
+                        <StatusRow status={s} />
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
             </div>
-            <div className="space-y-2">
-              <Label>Environment</Label>
-              <Select value={findingEnvironment} onValueChange={(v) => setFindingEnvironment(v as QaEnvironment)}>
-                <SelectTrigger className="w-full sm:max-w-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {QA_ENVIRONMENTS.map((env) => (
-                    <SelectItem key={env} value={env}>
-                      {env}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="qa-finding-desc">Details</Label>
-              <Textarea
-                id="qa-finding-desc"
-                value={findingDescription}
-                onChange={(e) => setFindingDescription(e.target.value)}
-                placeholder="Steps, expected vs actual…"
-                rows={3}
-              />
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="qa-reporter">Reporter</Label>
+                <Input
+                  id="qa-reporter"
+                  value={findingReporter}
+                  onChange={(e) => setFindingReporter(e.target.value)}
+                  placeholder="Reporter"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Environment</Label>
+                <Select value={findingEnvironment} onValueChange={(v) => setFindingEnvironment(v as QaEnvironment)}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {QA_ENVIRONMENTS.map((env) => (
+                      <SelectItem key={env} value={env}>
+                        {env}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
@@ -938,7 +1023,7 @@ export function QAPage() {
                   id="qa-ticket"
                   value={findingTicketLink}
                   onChange={(e) => setFindingTicketLink(e.target.value)}
-                  placeholder="jira… or linear…"
+                  placeholder="Ticket link"
                 />
               </div>
             </div>
@@ -1171,7 +1256,6 @@ export function QAPage() {
           <Button type="button" variant="ghost" size="sm" className="gap-1.5 px-2" asChild>
             <Link to="/qa">
               <ArrowLeft className="h-4 w-4" />
-              All QA pages
             </Link>
           </Button>
           <Separator orientation="vertical" className="h-5" />
@@ -1217,7 +1301,7 @@ export function QAPage() {
 
         {activeSession.findings.length > 0 ? (
           <div className="shrink-0 border-b bg-muted/25 px-4 py-3 sm:px-5">
-            <div className="mx-auto flex min-w-0 max-w-4xl flex-nowrap items-center gap-2 overflow-x-auto pb-0.5">
+            <div className="mx-auto flex min-w-0 max-w-6xl flex-nowrap items-center gap-2 overflow-x-auto pb-0.5">
               <div className="relative min-h-9 min-w-[10rem] flex-1">
                 <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -1365,6 +1449,54 @@ export function QAPage() {
 
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1"
+                      disabled={reporterFilterOptions.length === 0 && !hasNoReporterFindings}
+                    >
+                      Reporter
+                      {filterReporters.length > 0 ? (
+                        <Badge variant="secondary" className="h-5 min-w-5 px-1 text-[10px]">
+                          {filterReporters.length}
+                        </Badge>
+                      ) : null}
+                      <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="max-h-64 w-56 overflow-y-auto">
+                    <DropdownMenuLabel>Reporter</DropdownMenuLabel>
+                    {hasNoReporterFindings ? (
+                      <DropdownMenuCheckboxItem
+                        checked={filterReporters.includes(NO_REPORTER)}
+                        onCheckedChange={() =>
+                          setFilterReporters((prev) =>
+                            prev.includes(NO_REPORTER) ? prev.filter((x) => x !== NO_REPORTER) : [...prev, NO_REPORTER],
+                          )
+                        }
+                      >
+                        No reporter
+                      </DropdownMenuCheckboxItem>
+                    ) : null}
+                    {reporterFilterOptions.map((name) => (
+                      <DropdownMenuCheckboxItem
+                        key={name}
+                        checked={filterReporters.includes(name)}
+                        onCheckedChange={() =>
+                          setFilterReporters((prev) =>
+                            prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name],
+                          )
+                        }
+                      >
+                        {name}
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
                     <Button variant="outline" size="sm" className="h-8 gap-1" disabled={tagFilterOptions.length === 0}>
                       Tags
                       {filterTags.length > 0 ? (
@@ -1402,7 +1534,7 @@ export function QAPage() {
         ) : null}
 
         <ScrollArea className="min-h-0 flex-1">
-          <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6">
+          <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
             {activeSession.findings.length === 0 ? (
               <div className="rounded-xl border border-dashed bg-muted/20 p-10 text-center">
                 <p className="font-medium">No findings yet</p>
@@ -1423,25 +1555,27 @@ export function QAPage() {
                 </Button>
               </div>
             ) : (
-              <ul className="space-y-4">
+              <ul className="space-y-3">
                 {filteredFindings.map((f) => (
-                  <li key={f.id} className="rounded-xl border bg-card p-4 shadow-sm sm:p-5">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1 space-y-3">
-                        <div className="flex flex-wrap items-center gap-2">
+                  <li key={f.id} className="overflow-hidden rounded-xl border bg-card shadow-sm">
+                    <div className="flex flex-wrap items-start justify-between gap-2 p-3 sm:p-4">
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           <h2 className="text-sm font-semibold leading-snug sm:text-base">{f.title}</h2>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <button
                                 type="button"
                                 className={cn(
-                                  badgeVariants({ variant: 'outline' }),
                                   cardChipRounded,
-                                  'h-auto max-w-[9rem] shrink-0 cursor-pointer truncate border px-2.5 py-0.5 text-xs font-medium transition-opacity hover:opacity-90',
-                                  statusBadgeClass(f.status),
+                                  'inline-flex h-auto max-w-[11rem] shrink-0 cursor-pointer items-center gap-1.5 truncate border border-neutral-300 bg-white px-2.5 py-0.5 text-xs font-medium text-foreground shadow-none transition-colors hover:bg-neutral-50 dark:border-neutral-600 dark:bg-neutral-950 dark:text-neutral-100 dark:hover:bg-neutral-900',
                                 )}
                               >
-                                {qaStatusLabel(f.status)}
+                                <span
+                                  className={cn('h-1.5 w-1.5 shrink-0 rounded-full', statusDotClass(f.status))}
+                                  aria-hidden
+                                />
+                                <span className="truncate">{qaStatusLabel(f.status)}</span>
                               </button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start" className="w-52">
@@ -1452,7 +1586,7 @@ export function QAPage() {
                               >
                                 {QA_STATUSES.map((s) => (
                                   <DropdownMenuRadioItem key={s} value={s}>
-                                    {qaStatusLabel(s)}
+                                    <StatusRow status={s} />
                                   </DropdownMenuRadioItem>
                                 ))}
                               </DropdownMenuRadioGroup>
@@ -1486,33 +1620,6 @@ export function QAPage() {
                               </DropdownMenuRadioGroup>
                             </DropdownMenuContent>
                           </DropdownMenu>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <button
-                                type="button"
-                                className={cn(
-                                  badgeVariants({ variant: 'secondary' }),
-                                  cardChipRounded,
-                                  'h-auto shrink-0 cursor-pointer border px-2.5 py-0.5 font-mono text-xs transition-opacity hover:opacity-90',
-                                )}
-                              >
-                                {f.environment}
-                              </button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="start" className="w-40">
-                              <DropdownMenuLabel>Environment</DropdownMenuLabel>
-                              <DropdownMenuRadioGroup
-                                value={f.environment}
-                                onValueChange={(v) => patchFinding(f.id, { environment: v as QaEnvironment })}
-                              >
-                                {QA_ENVIRONMENTS.map((env) => (
-                                  <DropdownMenuRadioItem key={env} value={env} className="font-mono text-xs">
-                                    {env}
-                                  </DropdownMenuRadioItem>
-                                ))}
-                              </DropdownMenuRadioGroup>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
                           <FindingAssigneePopover
                             assignee={f.assignee}
                             suggestions={assigneeFilterOptions}
@@ -1522,12 +1629,12 @@ export function QAPage() {
                         {f.description ? (
                           <p className="whitespace-pre-wrap text-sm text-muted-foreground">{f.description}</p>
                         ) : null}
-                        <div className="flex flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-1">
+                        <div className="flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-0.5">
                           <LinkRow href={f.figmaLink} label="Open Figma" icon={Frame} />
                           <LinkRow href={f.ticketLink} label="Open ticket" icon={Ticket} />
                         </div>
                         {f.screenshots.length > 0 ? (
-                          <div className="flex flex-wrap gap-2">
+                          <div className="flex flex-wrap gap-1.5">
                             {f.screenshots.map((s) => (
                               <button
                                 key={s.id}
@@ -1547,7 +1654,7 @@ export function QAPage() {
                           onSetTags={(next) => patchFinding(f.id, { tags: next })}
                         />
                       </div>
-                      <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-start">
+                      <div className="flex shrink-0 flex-col items-end gap-1 sm:flex-row sm:items-start">
                         <Button
                           type="button"
                           variant="ghost"
@@ -1598,6 +1705,48 @@ export function QAPage() {
                         </DropdownMenu>
                       </div>
                     </div>
+                    <footer className="border-t bg-muted/25 px-3 py-2 sm:px-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+                          {f.reporter?.trim() ? (
+                            <>
+                              Reported{' '}
+                              <time dateTime={f.createdAt}>{formatReportedFooterTime(f.createdAt)}</time>
+                              {' by '}
+                              <span className="font-medium text-foreground/90">{f.reporter.trim()}</span>
+                            </>
+                          ) : (
+                            <>
+                              Added <time dateTime={f.createdAt}>{formatReportedFooterTime(f.createdAt)}</time>
+                            </>
+                          )}
+                        </p>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              className="shrink-0 rounded-md px-2 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                              aria-label="Environment"
+                            >
+                              {f.environment}
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-40">
+                            <DropdownMenuLabel>Environment</DropdownMenuLabel>
+                            <DropdownMenuRadioGroup
+                              value={f.environment}
+                              onValueChange={(v) => patchFinding(f.id, { environment: v as QaEnvironment })}
+                            >
+                              {QA_ENVIRONMENTS.map((env) => (
+                                <DropdownMenuRadioItem key={env} value={env} className="font-mono text-xs">
+                                  {env}
+                                </DropdownMenuRadioItem>
+                              ))}
+                            </DropdownMenuRadioGroup>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </footer>
                   </li>
                 ))}
               </ul>
