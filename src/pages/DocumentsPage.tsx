@@ -578,7 +578,7 @@ export function DocumentsPage() {
               if (!open && uploadFileInputRef.current) uploadFileInputRef.current.value = ''
             }}
           >
-            <DialogContent>
+            <DialogContent className="sm:max-w-lg">
               <DialogHeader>
                 <DialogTitle>Upload File</DialogTitle>
                 <DialogDescription>

@@ -1,6 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from 'react'
 import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { AppHeader } from '@/components/AppHeader'
+import { BlockEditor } from '@/components/BlockEditor'
 import { Badge, badgeVariants } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -17,13 +26,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -54,10 +56,14 @@ import {
   newId,
   normalizeTag,
   compressImageFileToDataUrl,
+  qaDescriptionAsEditorHtml,
+  qaFindingBodyPlain,
   qaScreenshotLimits,
   QA_ENVIRONMENTS,
+  QA_CATEGORIES,
   QA_STATUSES,
   qaStatusLabel,
+  type QaCategory,
   type QaComment,
   type QaEnvironment,
   type QaFinding,
@@ -67,12 +73,19 @@ import {
   type QaState,
   type QaStatus,
 } from '@/lib/qaStorage'
+import { CategoryRow } from '@/lib/qaCategoryUi'
 import {
   ArrowLeft,
+  Calendar,
   ChevronDown,
-  ExternalLink,
-  Frame,
+  CircleDot,
+  Clock,
+  Flag,
+  Globe,
+  Hash,
   ImagePlus,
+  Layers,
+  Link2,
   MessageSquare,
   MoreVertical,
   Pencil,
@@ -81,6 +94,7 @@ import {
   Ticket,
   Trash2,
   User,
+  UserCircle,
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -97,8 +111,75 @@ const NO_REPORTER = '__no_reporter__'
 /** Slightly rounded chips on finding cards (override badge `rounded-full`). */
 const cardChipRounded = 'rounded-md'
 
+/** Borderless field styling for Notion-like property values in the finding dialog. */
+const notionModalValueInput =
+  'h-7 w-full rounded-md border-0 bg-transparent px-1.5 py-0 text-sm shadow-none outline-none transition-colors placeholder:text-muted-foreground/55 hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:ring-0'
+
+const notionModalPropControl =
+  'flex h-7 w-full max-w-lg items-center rounded-md px-1.5 py-0 text-sm transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+
+function formatNotionDateTime(iso: string) {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    })
+  } catch {
+    return ''
+  }
+}
+
+function NotionEmpty() {
+  return <span className="text-sm text-muted-foreground/80">Empty</span>
+}
+
+function NotionPropRow({
+  icon: Icon,
+  label,
+  children,
+  dense,
+}: {
+  icon: ComponentType<{ className?: string }>
+  label: string
+  children: ReactNode
+  /** Tighter row height for the finding dialog property list. */
+  dense?: boolean
+}) {
+  return (
+    <div
+      className={cn(
+        'grid grid-cols-1 items-start sm:grid-cols-[minmax(0,11.25rem)_minmax(0,1fr)] sm:items-center',
+        dense ? 'gap-0 py-0 sm:gap-x-3' : 'gap-0.5 py-0 sm:gap-x-4',
+      )}
+    >
+      <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+        <Icon className="h-4 w-4 shrink-0 opacity-85" aria-hidden />
+        <span>{label}</span>
+      </div>
+      <div className={cn('min-w-0 pl-7 sm:pl-0', dense ? 'text-[13px] leading-snug' : 'text-sm')}>{children}</div>
+    </div>
+  )
+}
+
 type FindingInlinePatch = Partial<
-  Pick<QaFinding, 'status' | 'priority' | 'environment' | 'assignee' | 'tags'>
+  Pick<
+    QaFinding,
+    | 'status'
+    | 'priority'
+    | 'environment'
+    | 'category'
+    | 'assignee'
+    | 'tags'
+    | 'title'
+    | 'description'
+    | 'screenshots'
+    | 'figmaLink'
+    | 'ticketLink'
+    | 'reporter'
+  >
 >
 
 function loadLastAuthor(): string {
@@ -190,30 +271,19 @@ function formatReportedFooterTime(iso: string) {
   }
 }
 
-function LinkRow({ href, label, icon: Icon }: { href: string; label: string; icon: ComponentType<{ className?: string }> }) {
-  if (!href) return null
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-flex max-w-full items-center gap-1.5 text-sm font-medium text-primary underline-offset-4 hover:underline"
-    >
-      <Icon className="h-3.5 w-3.5 shrink-0" />
-      <span className="truncate">{label}</span>
-      <ExternalLink className="h-3 w-3 shrink-0 opacity-60" aria-hidden />
-    </a>
-  )
-}
-
 function FindingTagsPopover({
   tags,
   tagPool,
   onSetTags,
+  appearance = 'chip',
+  dense,
 }: {
   tags: string[]
   tagPool: string[]
   onSetTags: (next: string[]) => void
+  appearance?: 'chip' | 'notion'
+  /** Shorter trigger row (finding dialog). */
+  dense?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
@@ -230,14 +300,24 @@ function FindingTagsPopover({
     setInput('')
   }
 
+  const triggerClass =
+    appearance === 'notion'
+      ? dense
+        ? 'flex h-7 w-full max-w-full items-center rounded-md px-1.5 py-0 text-left text-[13px] leading-snug transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+        : 'flex min-h-9 w-full max-w-full items-center rounded-md px-1.5 py-1 text-left text-sm transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+      : 'group flex max-w-full flex-wrap items-center gap-1.5 rounded-md border border-dashed border-transparent px-0.5 py-0.5 text-left transition-colors hover:border-border hover:bg-muted/30'
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="group flex max-w-full flex-wrap items-center gap-1.5 rounded-md border border-dashed border-transparent px-0.5 py-0.5 text-left transition-colors hover:border-border hover:bg-muted/30"
-        >
-          {tags.length === 0 ? (
+        <button type="button" onClick={(e) => e.stopPropagation()} className={triggerClass}>
+          {appearance === 'notion' ? (
+            tags.length === 0 ? (
+              <NotionEmpty />
+            ) : (
+              <span className="truncate text-foreground">{tags.join(', ')}</span>
+            )
+          ) : tags.length === 0 ? (
             <span
               className={cn(badgeVariants({ variant: 'outline' }), cardChipRounded, 'text-muted-foreground')}
             >
@@ -304,10 +384,14 @@ function FindingAssigneePopover({
   assignee,
   suggestions,
   onSet,
+  appearance = 'chip',
+  dense,
 }: {
   assignee: string
   suggestions: string[]
   onSet: (value: string) => void
+  appearance?: 'chip' | 'notion'
+  dense?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(assignee)
@@ -322,20 +406,49 @@ function FindingAssigneePopover({
   }
 
   const picks = suggestions.filter((n) => n !== assignee.trim())
+  const trimmed = assignee.trim()
+  const initial = trimmed ? trimmed.slice(0, 1).toUpperCase() : ''
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className={cn(
-            badgeVariants({ variant: 'secondary' }),
-            cardChipRounded,
-            'inline-flex h-auto max-w-[11rem] cursor-pointer items-center gap-1 truncate border px-2 py-0.5 text-xs font-normal transition-opacity hover:opacity-90',
-          )}
+          onClick={(e) => e.stopPropagation()}
+          className={
+            appearance === 'notion'
+              ? dense
+                ? 'flex h-7 w-full max-w-full items-center gap-1.5 rounded-md px-1.5 py-0 text-left text-[13px] leading-snug transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+                : 'flex min-h-9 w-full max-w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+              : cn(
+                  badgeVariants({ variant: 'secondary' }),
+                  cardChipRounded,
+                  'inline-flex h-auto max-w-[11rem] cursor-pointer items-center gap-1 truncate border px-2 py-0.5 text-xs font-normal transition-opacity hover:opacity-90',
+                )
+          }
         >
-          <User className="h-3 w-3 shrink-0 opacity-70" />
-          <span className="truncate">{assignee.trim() || 'Assignee…'}</span>
+          {appearance === 'notion' ? (
+            trimmed ? (
+              <>
+                <span
+                  className={cn(
+                    'flex shrink-0 items-center justify-center rounded-full bg-violet-600 font-semibold text-white',
+                    dense ? 'h-6 w-6 text-[10px]' : 'h-7 w-7 text-xs',
+                  )}
+                >
+                  {initial}
+                </span>
+                <span className="min-w-0 truncate text-foreground">{trimmed}</span>
+              </>
+            ) : (
+              <NotionEmpty />
+            )
+          ) : (
+            <>
+              <User className="h-3 w-3 shrink-0 opacity-70" />
+              <span className="truncate">{trimmed || 'No assignee'}</span>
+            </>
+          )}
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-72 p-3" align="start">
@@ -414,12 +527,12 @@ export function QAPage() {
   const [findingDialogOpen, setFindingDialogOpen] = useState(false)
   const [editingFindingId, setEditingFindingId] = useState<string | null>(null)
   const [findingTitle, setFindingTitle] = useState('')
-  const [findingDescription, setFindingDescription] = useState('')
+  const [findingDocHtml, setFindingDocHtml] = useState('')
   const [findingPriority, setFindingPriority] = useState<QaPriority>('medium')
   const [findingStatus, setFindingStatus] = useState<QaStatus>('not_started')
   const [findingEnvironment, setFindingEnvironment] = useState<QaEnvironment>('STG')
+  const [findingCategory, setFindingCategory] = useState<QaCategory>('bugs')
   const [findingTags, setFindingTags] = useState<string[]>([])
-  const [tagInput, setTagInput] = useState('')
   const [findingAssignee, setFindingAssignee] = useState('')
   const [findingReporter, setFindingReporter] = useState('')
   const [findingFigmaLink, setFindingFigmaLink] = useState('')
@@ -428,12 +541,20 @@ export function QAPage() {
   const [screenshotBusy, setScreenshotBusy] = useState(false)
   const [screenshotLightbox, setScreenshotLightbox] = useState<{ dataUrl: string; name: string } | null>(null)
 
-  const [commentsFindingId, setCommentsFindingId] = useState<string | null>(null)
   const [commentAuthor, setCommentAuthor] = useState(() => loadLastAuthor())
   const [commentText, setCommentText] = useState('')
+  const [commentComposeOpen, setCommentComposeOpen] = useState(false)
 
   const [sessionToDelete, setSessionToDelete] = useState<QaSession | null>(null)
   const [findingToDelete, setFindingToDelete] = useState<{ sessionId: string; findingId: string } | null>(null)
+
+  const [docModalTitle, setDocModalTitle] = useState('')
+  const [docModalHtml, setDocModalHtml] = useState('')
+  const documentFindingIdRef = useRef<string | null>(null)
+  const docDraftTitleRef = useRef('')
+  const docDraftHtmlRef = useRef('')
+  const docSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const docTitleRef = useRef<HTMLTextAreaElement>(null)
 
   const [filterSearch, setFilterSearch] = useState('')
   const [filterStatuses, setFilterStatuses] = useState<QaStatus[]>([])
@@ -493,6 +614,13 @@ export function QAPage() {
     setFilterReporters([])
     setFilterTags([])
     setFilterEnvironments([])
+    if (docSaveTimerRef.current) {
+      window.clearTimeout(docSaveTimerRef.current)
+      docSaveTimerRef.current = null
+    }
+    setFindingDialogOpen(false)
+    setEditingFindingId(null)
+    documentFindingIdRef.current = null
   }, [sessionIdParam])
 
   const activeSession = useMemo(
@@ -500,10 +628,10 @@ export function QAPage() {
     [state.sessions, sessionIdParam],
   )
 
-  const commentsFinding = useMemo(() => {
-    if (!activeSession || !commentsFindingId) return null
-    return activeSession.findings.find((f) => f.id === commentsFindingId) ?? null
-  }, [activeSession, commentsFindingId])
+  const modalFinding = useMemo(() => {
+    if (!activeSession || !editingFindingId || !findingDialogOpen) return null
+    return activeSession.findings.find((f) => f.id === editingFindingId) ?? null
+  }, [activeSession, editingFindingId, findingDialogOpen])
 
   const assigneeFilterOptions = useMemo(() => {
     if (!activeSession) return []
@@ -550,7 +678,7 @@ export function QAPage() {
     return activeSession.findings.filter((f) => {
       if (q) {
         const hay =
-          `${f.title}\n${f.description}\n${f.environment}\n${f.assignee}\n${f.reporter ?? ''}\n${f.tags.join('\n')}`.toLowerCase()
+          `${f.title}\n${qaFindingBodyPlain(f.description)}\n${f.environment}\n${f.category}\n${f.assignee}\n${f.reporter ?? ''}\n${f.tags.join('\n')}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       if (filterStatuses.length > 0 && !filterStatuses.includes(f.status)) return false
@@ -599,6 +727,102 @@ export function QAPage() {
     [sessionIdParam],
   )
 
+  const resizeDocTitle = useCallback(() => {
+    const el = docTitleRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [])
+
+  useEffect(() => {
+    resizeDocTitle()
+  }, [docModalTitle, resizeDocTitle, findingDialogOpen, editingFindingId])
+
+  const scheduleDocSave = useCallback(() => {
+    const id = documentFindingIdRef.current
+    if (!id) return
+    if (docSaveTimerRef.current) window.clearTimeout(docSaveTimerRef.current)
+    docSaveTimerRef.current = window.setTimeout(() => {
+      patchFinding(id, {
+        title: docDraftTitleRef.current.trim(),
+        description: docDraftHtmlRef.current,
+      })
+    }, 550)
+  }, [patchFinding])
+
+  const flushDocDraftOnly = useCallback(() => {
+    if (docSaveTimerRef.current) {
+      window.clearTimeout(docSaveTimerRef.current)
+      docSaveTimerRef.current = null
+    }
+    const id = documentFindingIdRef.current
+    if (id) {
+      patchFinding(id, {
+        title: docDraftTitleRef.current.trim(),
+        description: docDraftHtmlRef.current,
+      })
+    }
+  }, [patchFinding])
+
+  const closeFindingModal = useCallback(() => {
+    flushDocDraftOnly()
+    setFindingDialogOpen(false)
+    setEditingFindingId(null)
+    documentFindingIdRef.current = null
+    setCommentComposeOpen(false)
+  }, [flushDocDraftOnly])
+
+  const openFindingModal = useCallback(
+    (f: QaFinding) => {
+      const prev = documentFindingIdRef.current
+      if (prev) {
+        if (docSaveTimerRef.current) {
+          window.clearTimeout(docSaveTimerRef.current)
+          docSaveTimerRef.current = null
+        }
+        patchFinding(prev, {
+          title: docDraftTitleRef.current.trim(),
+          description: docDraftHtmlRef.current,
+        })
+      }
+      const html = qaDescriptionAsEditorHtml(f.description)
+      documentFindingIdRef.current = f.id
+      docDraftTitleRef.current = f.title
+      docDraftHtmlRef.current = html
+      setEditingFindingId(f.id)
+      setDocModalTitle(f.title)
+      setDocModalHtml(html)
+      setCommentComposeOpen(false)
+      setFindingDialogOpen(true)
+    },
+    [patchFinding],
+  )
+
+  const openNewFindingModal = useCallback(() => {
+    if (!sessionIdParam) return
+    flushDocDraftOnly()
+    documentFindingIdRef.current = null
+    if (docSaveTimerRef.current) {
+      window.clearTimeout(docSaveTimerRef.current)
+      docSaveTimerRef.current = null
+    }
+    setEditingFindingId(null)
+    setFindingTitle('')
+    setFindingDocHtml('')
+    setFindingPriority('medium')
+    setFindingStatus('not_started')
+    setFindingEnvironment('STG')
+    setFindingCategory('bugs')
+    setFindingTags([])
+    setFindingAssignee('')
+    setFindingReporter('')
+    setFindingFigmaLink('')
+    setFindingTicketLink('')
+    setFindingScreenshots([])
+    setCommentComposeOpen(false)
+    setFindingDialogOpen(true)
+  }, [flushDocDraftOnly, sessionIdParam])
+
   const filtersActive = useMemo(() => {
     return (
       filterSearch.trim().length > 0 ||
@@ -620,13 +844,6 @@ export function QAPage() {
     setFilterTags([])
     setFilterEnvironments([])
   }
-
-  const addTagFromInput = useCallback(() => {
-    const t = normalizeTag(tagInput)
-    if (!t) return
-    setFindingTags((prev) => (prev.includes(t) ? prev : [...prev, t]))
-    setTagInput('')
-  }, [tagInput])
 
   const openNewSession = () => {
     setSessionName('')
@@ -660,41 +877,6 @@ export function QAPage() {
     if (sessionIdParam === deletedId) {
       navigate('/qa', { replace: true })
     }
-  }
-
-  const openNewFinding = () => {
-    if (!sessionIdParam) return
-    setEditingFindingId(null)
-    setFindingTitle('')
-    setFindingDescription('')
-    setFindingPriority('medium')
-    setFindingStatus('not_started')
-    setFindingEnvironment('STG')
-    setFindingTags([])
-    setTagInput('')
-    setFindingAssignee('')
-    setFindingReporter('')
-    setFindingFigmaLink('')
-    setFindingTicketLink('')
-    setFindingScreenshots([])
-    setFindingDialogOpen(true)
-  }
-
-  const openEditFinding = (f: QaFinding) => {
-    setEditingFindingId(f.id)
-    setFindingTitle(f.title)
-    setFindingDescription(f.description)
-    setFindingPriority(f.priority)
-    setFindingStatus(f.status)
-    setFindingEnvironment(f.environment)
-    setFindingTags([...f.tags])
-    setTagInput('')
-    setFindingAssignee(f.assignee)
-    setFindingReporter(f.reporter ?? '')
-    setFindingFigmaLink(f.figmaLink)
-    setFindingTicketLink(f.ticketLink)
-    setFindingScreenshots([...f.screenshots])
-    setFindingDialogOpen(true)
   }
 
   const onPickScreenshots = async (files: FileList | null) => {
@@ -735,11 +917,19 @@ export function QAPage() {
 
   const saveFinding = () => {
     if (!sessionIdParam) return
-    const title = findingTitle.trim()
-    if (!title) {
-      toast.error('Title is required')
+
+    if (editingFindingId) {
+      const title = docDraftTitleRef.current.trim()
+      if (!title) {
+        toast.error('Title is required')
+        return
+      }
+      flushDocDraftOnly()
+      toast.success('Finding updated')
+      closeFindingModal()
       return
     }
+
     const now = new Date().toISOString()
     const figmaLink = normalizeLink(findingFigmaLink)
     const ticketLink = normalizeLink(findingTicketLink)
@@ -761,90 +951,146 @@ export function QAPage() {
       })
     }
 
-    if (editingFindingId) {
-      setState((prev) => {
-        const next: QaState = {
-          ...prev,
-          sessions: prev.sessions.map((s) => {
-            if (s.id !== sessionIdParam) return s
-            return {
-              ...s,
-              findings: s.findings.map((f) =>
-                f.id === editingFindingId
-                  ? {
-                      ...f,
-                      title,
-                      description: findingDescription.trim(),
-                      tags: findingTags,
-                      priority: findingPriority,
-                      status: findingStatus,
-                      environment: findingEnvironment,
-                      screenshots: findingScreenshots,
-                      figmaLink,
-                      ticketLink,
-                      assignee,
-                      reporter,
-                      updatedAt: now,
-                    }
-                  : f,
-              ),
-            }
-          }),
-        }
-        pushPersist(next)
-        return next
-      })
-      toast.success('Finding updated')
-    } else {
-      const id = newId()
-      const finding: QaFinding = {
-        id,
-        title,
-        description: findingDescription.trim(),
-        tags: findingTags,
-        priority: findingPriority,
-        status: findingStatus,
-        environment: findingEnvironment,
-        comments: [],
-        screenshots: findingScreenshots,
-        figmaLink,
-        ticketLink,
-        assignee,
-        reporter,
-        createdAt: now,
-        updatedAt: now,
+    const title = findingTitle.trim()
+    if (!title) {
+      toast.error('Title is required')
+      return
+    }
+    const id = newId()
+    const finding: QaFinding = {
+      id,
+      title,
+      description: findingDocHtml,
+      tags: findingTags,
+      priority: findingPriority,
+      status: findingStatus,
+      environment: findingEnvironment,
+      category: findingCategory,
+      comments: [],
+      screenshots: findingScreenshots,
+      figmaLink,
+      ticketLink,
+      assignee,
+      reporter,
+      createdAt: now,
+      updatedAt: now,
+    }
+    setState((prev) => {
+      const next: QaState = {
+        ...prev,
+        sessions: prev.sessions.map((s) =>
+          s.id === sessionIdParam ? { ...s, findings: [finding, ...s.findings] } : s,
+        ),
       }
-      setState((prev) => {
-        const next: QaState = {
-          ...prev,
-          sessions: prev.sessions.map((s) =>
-            s.id === sessionIdParam ? { ...s, findings: [finding, ...s.findings] } : s,
+      pushPersist(next)
+      return next
+    })
+    toast.success('Finding added')
+    closeFindingModal()
+  }
+
+  const onPickScreenshotsForFinding = async (findingId: string, files: FileList | null) => {
+    if (!files?.length || !sessionIdParam) return
+    setScreenshotBusy(true)
+    try {
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith('image/')) {
+          toast.error(`${file.name} is not an image`)
+          continue
+        }
+        try {
+          const dataUrl = await compressImageFileToDataUrl(file)
+          const shot: QaScreenshot = {
+            id: newId(),
+            name: file.name || 'screenshot.jpg',
+            dataUrl,
+            createdAt: new Date().toISOString(),
+          }
+          let atLimit = false
+          setState((prev) => {
+            const sid = sessionIdParam
+            const session = prev.sessions.find((s) => s.id === sid)
+            const f = session?.findings.find((x) => x.id === findingId)
+            if (!f || f.screenshots.length >= qaScreenshotLimits.maxCount) {
+              atLimit = true
+              return prev
+            }
+            return {
+              ...prev,
+              sessions: prev.sessions.map((s) => {
+                if (s.id !== sid) return s
+                return {
+                  ...s,
+                  findings: s.findings.map((x) =>
+                    x.id === findingId
+                      ? { ...x, screenshots: [...x.screenshots, shot], updatedAt: shot.createdAt }
+                      : x,
+                  ),
+                }
+              }),
+            }
+          })
+          if (atLimit) {
+            toast.error(`At most ${qaScreenshotLimits.maxCount} screenshots per finding`)
+            break
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : 'Could not add image'
+          toast.error(msg)
+        }
+      }
+    } finally {
+      setScreenshotBusy(false)
+    }
+  }
+
+  const removeScreenshotFromFinding = (findingId: string, shotId: string) => {
+    if (!sessionIdParam) return
+    setState((prev) => ({
+      ...prev,
+      sessions: prev.sessions.map((s) => {
+        if (s.id !== sessionIdParam) return s
+        return {
+          ...s,
+          findings: s.findings.map((f) =>
+            f.id === findingId
+              ? { ...f, screenshots: f.screenshots.filter((sh) => sh.id !== shotId), updatedAt: new Date().toISOString() }
+              : f,
           ),
         }
-        pushPersist(next)
-        return next
-      })
-      toast.success('Finding added')
-    }
-    setFindingDialogOpen(false)
+      }),
+    }))
   }
+
+  useEffect(() => {
+    if (!findingDialogOpen || !editingFindingId || !activeSession) return
+    if (!activeSession.findings.some((f) => f.id === editingFindingId)) {
+      if (docSaveTimerRef.current) {
+        window.clearTimeout(docSaveTimerRef.current)
+        docSaveTimerRef.current = null
+      }
+      closeFindingModal()
+    }
+  }, [activeSession, editingFindingId, findingDialogOpen, closeFindingModal])
 
   const confirmDeleteFinding = () => {
     if (!findingToDelete) return
     const { sessionId, findingId } = findingToDelete
+    if (editingFindingId === findingId) {
+      closeFindingModal()
+    }
     setState((prev) => ({
       ...prev,
       sessions: prev.sessions.map((s) =>
         s.id === sessionId ? { ...s, findings: s.findings.filter((f) => f.id !== findingId) } : s,
       ),
     }))
-    if (commentsFindingId === findingId) setCommentsFindingId(null)
     setFindingToDelete(null)
     toast.success('Finding removed')
   }
 
   const addComment = () => {
-    if (!sessionIdParam || !commentsFindingId) return
+    if (!sessionIdParam || !editingFindingId || !findingDialogOpen) return
     const author = commentAuthor.trim()
     const text = commentText.trim()
     if (!author) {
@@ -869,7 +1115,7 @@ export function QAPage() {
         return {
           ...s,
           findings: s.findings.map((f) =>
-            f.id === commentsFindingId
+            f.id === editingFindingId
               ? { ...f, comments: [...f.comments, comment], updatedAt: comment.createdAt }
               : f,
           ),
@@ -877,6 +1123,7 @@ export function QAPage() {
       }),
     }))
     setCommentText('')
+    setCommentComposeOpen(false)
     toast.success('Comment added')
   }
 
@@ -911,218 +1158,6 @@ export function QAPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={findingDialogOpen} onOpenChange={setFindingDialogOpen}>
-        <DialogContent className="flex max-h-[min(92vh,44rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
-          <DialogHeader className="shrink-0 border-b px-6 py-4 pr-14 text-left">
-            <DialogTitle>{editingFindingId ? 'Edit QA item' : 'Add QA item'}</DialogTitle>
-          </DialogHeader>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="qa-finding-title">Title</Label>
-              <Input
-                id="qa-finding-title"
-                value={findingTitle}
-                onChange={(e) => setFindingTitle(e.target.value)}
-                placeholder="Short summary"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="qa-finding-desc">Description</Label>
-              <Textarea
-                id="qa-finding-desc"
-                value={findingDescription}
-                onChange={(e) => setFindingDescription(e.target.value)}
-                placeholder="Steps, expected vs actual…"
-                rows={3}
-              />
-            </div>
-            <Separator />
-            <div className="grid gap-4 sm:grid-cols-3">
-              <div className="space-y-2 sm:col-span-1">
-                <Label htmlFor="qa-assignee">Assignee</Label>
-                <div className="relative">
-                  <User className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    id="qa-assignee"
-                    className="pl-8"
-                    value={findingAssignee}
-                    onChange={(e) => setFindingAssignee(e.target.value)}
-                    placeholder="Assignee"
-                  />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label>Priority</Label>
-                <Select value={findingPriority} onValueChange={(v) => setFindingPriority(v as QaPriority)}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="low">Low</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                    <SelectItem value="critical">Critical</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Status</Label>
-                <Select value={findingStatus} onValueChange={(v) => setFindingStatus(v as QaStatus)}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {QA_STATUSES.map((s) => (
-                      <SelectItem key={s} value={s}>
-                        <StatusRow status={s} />
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="qa-reporter">Reporter</Label>
-                <Input
-                  id="qa-reporter"
-                  value={findingReporter}
-                  onChange={(e) => setFindingReporter(e.target.value)}
-                  placeholder="Reporter"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Environment</Label>
-                <Select value={findingEnvironment} onValueChange={(v) => setFindingEnvironment(v as QaEnvironment)}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {QA_ENVIRONMENTS.map((env) => (
-                      <SelectItem key={env} value={env}>
-                        {env}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="qa-figma">Figma link</Label>
-                <Input
-                  id="qa-figma"
-                  value={findingFigmaLink}
-                  onChange={(e) => setFindingFigmaLink(e.target.value)}
-                  placeholder="figma.com/…"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="qa-ticket">Ticket link</Label>
-                <Input
-                  id="qa-ticket"
-                  value={findingTicketLink}
-                  onChange={(e) => setFindingTicketLink(e.target.value)}
-                  placeholder="Ticket link"
-                />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>Screenshots</Label>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" variant="secondary" size="sm" className="gap-1.5" disabled={screenshotBusy} asChild>
-                  <label className="cursor-pointer">
-                    <ImagePlus className="h-4 w-4" />
-                    {screenshotBusy ? 'Processing…' : 'Add images'}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      className="sr-only"
-                      onChange={(e) => {
-                        void onPickScreenshots(e.target.files)
-                        e.target.value = ''
-                      }}
-                    />
-                  </label>
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  Up to {qaScreenshotLimits.maxCount}, resized for storage
-                </span>
-              </div>
-              {findingScreenshots.length > 0 ? (
-                <div className="flex flex-wrap gap-2 pt-1">
-                  {findingScreenshots.map((s) => (
-                    <div key={s.id} className="group relative h-20 w-28 overflow-hidden rounded-md border bg-muted">
-                      <img src={s.dataUrl} alt="" className="pointer-events-none h-full w-full object-cover" />
-                      <button
-                        type="button"
-                        className="absolute inset-0 z-0 rounded-md ring-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onClick={() => setScreenshotLightbox({ dataUrl: s.dataUrl, name: s.name })}
-                        aria-label={`View ${s.name} full screen`}
-                      />
-                      <button
-                        type="button"
-                        className="absolute right-1 top-1 z-10 rounded bg-background/90 p-0.5 opacity-0 shadow transition-opacity group-hover:opacity-100"
-                        aria-label="Remove screenshot"
-                        onClick={() => removeScreenshot(s.id)}
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="qa-tags">Tags</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="qa-tags"
-                  value={tagInput}
-                  onChange={(e) => setTagInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ',') {
-                      e.preventDefault()
-                      addTagFromInput()
-                    }
-                  }}
-                  placeholder="Type a tag, press Enter"
-                />
-                <Button type="button" variant="secondary" onClick={addTagFromInput}>
-                  Add
-                </Button>
-              </div>
-              {findingTags.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {findingTags.map((t) => (
-                    <Badge key={t} variant="secondary" className="gap-1 pr-1 font-normal">
-                      {t}
-                      <button
-                        type="button"
-                        className="rounded-full p-0.5 hover:bg-background/80"
-                        aria-label={`Remove tag ${t}`}
-                        onClick={() => setFindingTags((prev) => prev.filter((x) => x !== t))}
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </Badge>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          </div>
-          <DialogFooter className="shrink-0 border-t bg-background px-6 py-4">
-            <Button type="button" variant="ghost" onClick={() => setFindingDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="button" onClick={saveFinding}>
-              {editingFindingId ? 'Save' : 'Add QA item'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <Dialog open={!!screenshotLightbox} onOpenChange={(open) => !open && setScreenshotLightbox(null)}>
         <DialogContent
           showCloseButton
@@ -1144,60 +1179,610 @@ export function QAPage() {
       </Dialog>
 
       <Dialog
-        open={!!commentsFindingId && !!commentsFinding}
+        open={findingDialogOpen}
         onOpenChange={(open) => {
-          if (!open) setCommentsFindingId(null)
+          if (!open) closeFindingModal()
         }}
       >
-        <DialogContent className="flex max-h-[min(90vh,32rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
-          <DialogHeader className="shrink-0 border-b px-6 py-4 text-left">
-            <DialogTitle>Comments</DialogTitle>
-            <DialogDescription className="line-clamp-2">
-              {commentsFinding?.title ?? ''}
-            </DialogDescription>
+        <DialogContent className="qa-finding-modal flex max-h-[96vh] w-[calc(100vw-0.5rem)] max-w-[1000px] flex-col gap-0 overflow-hidden p-0">
+          <DialogHeader className="sr-only shrink-0">
+            <DialogTitle>{editingFindingId ? 'Edit QA item' : 'Add QA item'}</DialogTitle>
           </DialogHeader>
-          <ScrollArea className="min-h-[12rem] max-h-[40vh] flex-1 px-6">
-            <div className="space-y-4 py-4 pr-3">
-              {!commentsFinding?.comments.length ? (
-                <p className="text-sm text-muted-foreground">No comments yet.</p>
-              ) : (
-                commentsFinding.comments.map((c) => (
-                  <div key={c.id} className="rounded-lg border bg-muted/30 p-3">
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <p className="text-sm font-semibold text-foreground">{c.author}</p>
-                      <p className="text-xs text-muted-foreground">{formatTime(c.createdAt)}</p>
-                    </div>
-                    <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{c.text}</p>
+          <div className="max-h-[calc(96vh-5.5rem)] space-y-4 overflow-y-auto overscroll-contain px-6 py-5 sm:px-8">
+            {editingFindingId && modalFinding ? (
+              <>
+                <div className="space-y-6" onClick={(e) => e.stopPropagation()}>
+                  <textarea
+                    ref={docTitleRef}
+                    value={docModalTitle}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setDocModalTitle(v)
+                      docDraftTitleRef.current = v
+                      scheduleDocSave()
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        document.querySelector<HTMLElement>('.docmost-editor')?.focus()
+                      }
+                    }}
+                    className="docmost-title w-full resize-none border-0 bg-transparent p-0 !text-[1.2rem] font-semibold leading-snug tracking-tight text-foreground placeholder:text-muted-foreground/45 outline-none focus-visible:ring-0 sm:!text-[1.05rem]"
+                    placeholder="Untitled"
+                    rows={1}
+                    aria-label="Title"
+                  />
+                  <div className="pt-0.5">
+                    <NotionPropRow dense icon={CircleDot} label="Status">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(notionModalPropControl, 'gap-2 text-left text-foreground')}
+                          >
+                            <span
+                              className={cn('h-2 w-2 shrink-0 rounded-full', statusDotClass(modalFinding.status))}
+                              aria-hidden
+                            />
+                            <span className="truncate">{qaStatusLabel(modalFinding.status)}</span>
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-52">
+                          <DropdownMenuLabel>Status</DropdownMenuLabel>
+                          <DropdownMenuRadioGroup
+                            value={modalFinding.status}
+                            onValueChange={(v) => patchFinding(modalFinding.id, { status: v as QaStatus })}
+                          >
+                            {QA_STATUSES.map((s) => (
+                              <DropdownMenuRadioItem key={s} value={s}>
+                                <StatusRow status={s} />
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Flag} label="Priority">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(
+                              notionModalPropControl,
+                              'text-left capitalize',
+                              modalFinding.priority === 'critical' ? 'font-medium text-destructive' : 'text-foreground',
+                            )}
+                          >
+                            {modalFinding.priority}
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-44">
+                          <DropdownMenuLabel>Priority</DropdownMenuLabel>
+                          <DropdownMenuRadioGroup
+                            value={modalFinding.priority}
+                            onValueChange={(v) => patchFinding(modalFinding.id, { priority: v as QaPriority })}
+                          >
+                            {(['low', 'medium', 'high', 'critical'] as const).map((p) => (
+                              <DropdownMenuRadioItem key={p} value={p} className="capitalize">
+                                {p}
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={User} label="Assignee">
+                      <FindingAssigneePopover
+                        appearance="notion"
+                        dense
+                        assignee={modalFinding.assignee}
+                        suggestions={assigneeFilterOptions}
+                        onSet={(value) => patchFinding(modalFinding.id, { assignee: value })}
+                      />
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={UserCircle} label="Reporter">
+                      <Input
+                        id="qa-modal-reporter"
+                        value={modalFinding.reporter ?? ''}
+                        onChange={(e) => patchFinding(modalFinding.id, { reporter: e.target.value })}
+                        placeholder="Empty"
+                        className={notionModalValueInput}
+                        aria-label="Reporter"
+                      />
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Globe} label="Environment">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(notionModalPropControl, 'gap-2 text-left font-mono text-foreground')}
+                          >
+                            {modalFinding.environment}
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-40">
+                          <DropdownMenuLabel>Environment</DropdownMenuLabel>
+                          <DropdownMenuRadioGroup
+                            value={modalFinding.environment}
+                            onValueChange={(v) => patchFinding(modalFinding.id, { environment: v as QaEnvironment })}
+                          >
+                            {QA_ENVIRONMENTS.map((env) => (
+                              <DropdownMenuRadioItem key={env} value={env} className="font-mono text-xs">
+                                {env}
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Layers} label="Category">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(notionModalPropControl, 'gap-2 text-foreground')}
+                          >
+                            <CategoryRow category={modalFinding.category} />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-56">
+                          <DropdownMenuLabel>Category</DropdownMenuLabel>
+                          <DropdownMenuRadioGroup
+                            value={modalFinding.category}
+                            onValueChange={(v) => patchFinding(modalFinding.id, { category: v as QaCategory })}
+                          >
+                            {QA_CATEGORIES.map((category) => (
+                              <DropdownMenuRadioItem key={category} value={category}>
+                                <CategoryRow category={category} iconSize="sm" />
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Link2} label="Figma link">
+                      <Input
+                        id="qa-modal-figma"
+                        value={modalFinding.figmaLink}
+                        onChange={(e) => patchFinding(modalFinding.id, { figmaLink: e.target.value })}
+                        onBlur={(e) => patchFinding(modalFinding.id, { figmaLink: normalizeLink(e.target.value) })}
+                        placeholder="Empty"
+                        className={notionModalValueInput}
+                        aria-label="Figma link"
+                      />
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Ticket} label="Ticket link">
+                      <Input
+                        id="qa-modal-ticket"
+                        value={modalFinding.ticketLink}
+                        onChange={(e) => patchFinding(modalFinding.id, { ticketLink: e.target.value })}
+                        onBlur={(e) => patchFinding(modalFinding.id, { ticketLink: normalizeLink(e.target.value) })}
+                        placeholder="Empty"
+                        className={notionModalValueInput}
+                        aria-label="Ticket link"
+                      />
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Hash} label="Tags">
+                      <FindingTagsPopover
+                        appearance="notion"
+                        dense
+                        tags={modalFinding.tags}
+                        tagPool={tagFilterOptions}
+                        onSetTags={(next) => patchFinding(modalFinding.id, { tags: next })}
+                      />
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Calendar} label="Created">
+                      <span className="flex h-7 items-center pl-2 text-[13px] leading-snug text-foreground">
+                        {formatNotionDateTime(modalFinding.createdAt)}
+                      </span>
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Clock} label="Last updated">
+                      <span className="flex h-7 items-center pl-2 text-[13px] leading-snug text-foreground">
+                        {formatNotionDateTime(modalFinding.updatedAt)}
+                      </span>
+                    </NotionPropRow>
                   </div>
-                ))
-              )}
-            </div>
-          </ScrollArea>
-          <Separator />
-          <div className="shrink-0 space-y-3 px-6 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="qa-comment-author">Your name</Label>
-              <Input
-                id="qa-comment-author"
-                value={commentAuthor}
-                onChange={(e) => setCommentAuthor(e.target.value)}
-                placeholder="Author name"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="qa-comment-text">Comment</Label>
-              <Textarea
-                id="qa-comment-text"
-                value={commentText}
-                onChange={(e) => setCommentText(e.target.value)}
-                placeholder="Add a note or reply…"
-                rows={3}
-              />
-            </div>
-            <Button type="button" className="w-full sm:w-auto" onClick={addComment}>
-              Add comment
-            </Button>
+                </div>
+                <div className="mt-6" onClick={(e) => e.stopPropagation()}>
+                  <BlockEditor
+                    key={modalFinding.id}
+                    content={docModalHtml}
+                    onUpdate={(html) => {
+                      setDocModalHtml(html)
+                      docDraftHtmlRef.current = html
+                      scheduleDocSave()
+                    }}
+                    placeholder="Write details, or type '/' for blocks…"
+                  />
+                </div>
+                <Separator className="mt-4" />
+                <div className="space-y-4 pb-2" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-2">
+                    <ImagePlus className="h-4 w-4 text-muted-foreground" />
+                    <p className="text-sm font-semibold">Screenshots</p>
+                    {modalFinding.screenshots.length > 0 ? (
+                      <span className="text-xs tabular-nums text-muted-foreground">
+                        ({modalFinding.screenshots.length})
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5 px-0" disabled={screenshotBusy} asChild>
+                      <label className="cursor-pointer">
+                        <Plus className="h-4 w-4" />
+                        {screenshotBusy ? 'Processing…' : 'Add images'}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="sr-only"
+                          onChange={(e) => {
+                            void onPickScreenshotsForFinding(modalFinding.id, e.target.files)
+                            e.target.value = ''
+                          }}
+                        />
+                      </label>
+                    </Button>
+                    {/* <span className="text-xs text-muted-foreground">
+                      Up to {qaScreenshotLimits.maxCount}, resized
+                    </span> */}
+                  </div>
+                  {modalFinding.screenshots.length > 0 ? (
+                    <div className="flex flex-col gap-3">
+                      {modalFinding.screenshots.map((s) => (
+                        <div
+                          key={s.id}
+                          className="group relative w-full overflow-hidden rounded-lg border bg-muted sm:max-h-[min(52vh,480px)]"
+                        >
+                          <img
+                            src={s.dataUrl}
+                            alt=""
+                            className="pointer-events-none max-h-[min(52vh,480px)] w-full object-contain"
+                          />
+                          <button
+                            type="button"
+                            className="absolute inset-0 z-0 rounded-lg ring-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            onClick={() => setScreenshotLightbox({ dataUrl: s.dataUrl, name: s.name })}
+                            aria-label={`View ${s.name} full screen`}
+                          />
+                          <button
+                            type="button"
+                            className="absolute right-2 top-2 z-10 rounded-md bg-background/90 p-1 opacity-0 shadow transition-opacity group-hover:opacity-100"
+                            aria-label="Remove screenshot"
+                            onClick={() => removeScreenshotFromFinding(modalFinding.id, s.id)}
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <NotionEmpty />
+                  )}
+                </div>
+                <Separator />
+                <div className="space-y-4 pb-2" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                    <p className="text-sm font-semibold">Comments</p>
+                    {modalFinding.comments.length > 0 ? (
+                      <span className="text-xs tabular-nums text-muted-foreground">({modalFinding.comments.length})</span>
+                    ) : null}
+                  </div>
+                  {!modalFinding.comments.length ? (
+                    <p className="text-sm text-muted-foreground">No comments yet.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {modalFinding.comments.map((c) => (
+                        <div key={c.id} className="rounded-lg border bg-muted/30 p-3">
+                          <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <p className="text-sm font-semibold text-foreground">{c.author}</p>
+                            <p className="text-xs text-muted-foreground">{formatTime(c.createdAt)}</p>
+                          </div>
+                          <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{c.text}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {commentComposeOpen ? (
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <Label htmlFor="qa-modal-comment-author">Your name</Label>
+                        <Input
+                          id="qa-modal-comment-author"
+                          value={commentAuthor}
+                          onChange={(e) => setCommentAuthor(e.target.value)}
+                          placeholder="Author name"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="qa-modal-comment-text">Comment</Label>
+                        <Textarea
+                          id="qa-modal-comment-text"
+                          value={commentText}
+                          onChange={(e) => setCommentText(e.target.value)}
+                          placeholder="Add a note or reply…"
+                          rows={3}
+                        />
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" className="w-full sm:w-auto" onClick={addComment}>
+                          Post comment
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="w-full sm:w-auto"
+                          onClick={() => {
+                            setCommentComposeOpen(false)
+                            setCommentText('')
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={() => setCommentComposeOpen(true)}>
+                      Add comment
+                    </Button>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="space-y-6" onClick={(e) => e.stopPropagation()}>
+                  <textarea
+                    id="qa-new-title"
+                    value={findingTitle}
+                    onChange={(e) => setFindingTitle(e.target.value)}
+                    className="w-full resize-none border-0 bg-transparent p-0 !text-[0.95rem] font-semibold leading-snug tracking-tight text-foreground placeholder:text-muted-foreground/45 outline-none focus-visible:ring-0 sm:!text-[1.05rem]"
+                    placeholder="Untitled"
+                    rows={1}
+                    aria-label="Title"
+                  />
+                  <div className="pt-0.5">
+                    <NotionPropRow dense icon={CircleDot} label="Status">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(notionModalPropControl, 'gap-2 text-left text-foreground')}
+                          >
+                            <span
+                              className={cn('h-2 w-2 shrink-0 rounded-full', statusDotClass(findingStatus))}
+                              aria-hidden
+                            />
+                            <span className="truncate">{qaStatusLabel(findingStatus)}</span>
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-52">
+                          <DropdownMenuLabel>Status</DropdownMenuLabel>
+                          <DropdownMenuRadioGroup
+                            value={findingStatus}
+                            onValueChange={(v) => setFindingStatus(v as QaStatus)}
+                          >
+                            {QA_STATUSES.map((s) => (
+                              <DropdownMenuRadioItem key={s} value={s}>
+                                <StatusRow status={s} />
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Flag} label="Priority">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(
+                              notionModalPropControl,
+                              'text-left capitalize',
+                              findingPriority === 'critical' ? 'font-medium text-destructive' : 'text-foreground',
+                            )}
+                          >
+                            {findingPriority}
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-44">
+                          <DropdownMenuLabel>Priority</DropdownMenuLabel>
+                          <DropdownMenuRadioGroup
+                            value={findingPriority}
+                            onValueChange={(v) => setFindingPriority(v as QaPriority)}
+                          >
+                            {(['low', 'medium', 'high', 'critical'] as const).map((p) => (
+                              <DropdownMenuRadioItem key={p} value={p} className="capitalize">
+                                {p}
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={User} label="Assignee">
+                      <FindingAssigneePopover
+                        appearance="notion"
+                        dense
+                        assignee={findingAssignee}
+                        suggestions={assigneeFilterOptions}
+                        onSet={(value) => setFindingAssignee(value)}
+                      />
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={UserCircle} label="Reporter">
+                      <Input
+                        id="qa-new-reporter"
+                        value={findingReporter}
+                        onChange={(e) => setFindingReporter(e.target.value)}
+                        placeholder="Empty"
+                        className={notionModalValueInput}
+                        aria-label="Reporter"
+                      />
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Globe} label="Environment">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(notionModalPropControl, 'gap-2 text-left font-mono text-foreground')}
+                          >
+                            {findingEnvironment}
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-40">
+                          <DropdownMenuLabel>Environment</DropdownMenuLabel>
+                          <DropdownMenuRadioGroup
+                            value={findingEnvironment}
+                            onValueChange={(v) => setFindingEnvironment(v as QaEnvironment)}
+                          >
+                            {QA_ENVIRONMENTS.map((env) => (
+                              <DropdownMenuRadioItem key={env} value={env} className="font-mono text-xs">
+                                {env}
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Layers} label="Category">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(notionModalPropControl, 'gap-2 text-foreground')}
+                          >
+                            <CategoryRow category={findingCategory} />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-56">
+                          <DropdownMenuLabel>Category</DropdownMenuLabel>
+                          <DropdownMenuRadioGroup
+                            value={findingCategory}
+                            onValueChange={(v) => setFindingCategory(v as QaCategory)}
+                          >
+                            {QA_CATEGORIES.map((category) => (
+                              <DropdownMenuRadioItem key={category} value={category}>
+                                <CategoryRow category={category} iconSize="sm" />
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Link2} label="Figma link">
+                      <Input
+                        id="qa-new-figma"
+                        value={findingFigmaLink}
+                        onChange={(e) => setFindingFigmaLink(e.target.value)}
+                        placeholder="Empty"
+                        className={notionModalValueInput}
+                        aria-label="Figma link"
+                      />
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Ticket} label="Ticket link">
+                      <Input
+                        id="qa-new-ticket"
+                        value={findingTicketLink}
+                        onChange={(e) => setFindingTicketLink(e.target.value)}
+                        placeholder="Empty"
+                        className={notionModalValueInput}
+                        aria-label="Ticket link"
+                      />
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Hash} label="Tags">
+                      <FindingTagsPopover
+                        appearance="notion"
+                        dense
+                        tags={findingTags}
+                        tagPool={tagFilterOptions}
+                        onSetTags={setFindingTags}
+                      />
+                    </NotionPropRow>
+                  </div>
+                </div>
+                <div className="mt-6" onClick={(e) => e.stopPropagation()}>
+                  <BlockEditor
+                    content={findingDocHtml}
+                    onUpdate={setFindingDocHtml}
+                    placeholder="Write details, or type '/' for blocks…"
+                  />
+                </div>
+                <Separator className="mt-4" />
+                <div className="space-y-4 pb-2" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-2">
+                    <ImagePlus className="h-4 w-4 text-muted-foreground" />
+                    <p className="text-sm font-semibold">Screenshots</p>
+                    {findingScreenshots.length > 0 ? (
+                      <span className="text-xs tabular-nums text-muted-foreground">({findingScreenshots.length})</span>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5 px-2" disabled={screenshotBusy} asChild>
+                      <label className="cursor-pointer">
+                        <ImagePlus className="h-4 w-4" />
+                        {screenshotBusy ? 'Processing…' : 'Add images'}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="sr-only"
+                          onChange={(e) => {
+                            void onPickScreenshots(e.target.files)
+                            e.target.value = ''
+                          }}
+                        />
+                      </label>
+                    </Button>
+                    <span className="text-xs text-muted-foreground">
+                      Up to {qaScreenshotLimits.maxCount}, resized
+                    </span>
+                  </div>
+                  {findingScreenshots.length > 0 ? (
+                    <div className="flex flex-col gap-3">
+                      {findingScreenshots.map((s) => (
+                        <div
+                          key={s.id}
+                          className="group relative w-full overflow-hidden rounded-lg border bg-muted sm:max-h-[min(52vh,480px)]"
+                        >
+                          <img
+                            src={s.dataUrl}
+                            alt=""
+                            className="pointer-events-none max-h-[min(52vh,480px)] w-full object-contain"
+                          />
+                          <button
+                            type="button"
+                            className="absolute inset-0 z-0 rounded-lg ring-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            onClick={() => setScreenshotLightbox({ dataUrl: s.dataUrl, name: s.name })}
+                            aria-label={`View ${s.name} full screen`}
+                          />
+                          <button
+                            type="button"
+                            className="absolute right-2 top-2 z-10 rounded-md bg-background/90 p-1 opacity-0 shadow transition-opacity group-hover:opacity-100"
+                            aria-label="Remove screenshot"
+                            onClick={() => removeScreenshot(s.id)}
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <NotionEmpty />
+                  )}
+                </div>
+                <Separator />
+                <p className="pb-2 text-sm text-muted-foreground">Save this item to add comments.</p>
+              </>
+            )}
           </div>
+          <DialogFooter className="shrink-0 border-t bg-background px-6 py-4 sm:px-8">
+            <Button type="button" variant="ghost" onClick={() => closeFindingModal()}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={saveFinding}>
+              {editingFindingId ? 'Done' : 'Add QA item'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -1271,7 +1856,12 @@ export function QAPage() {
               {formatTime(activeSession.createdAt)}
             </p>
           </div>
-          <Button type="button" size="sm" className="shrink-0 gap-1.5" onClick={openNewFinding}>
+          <Button
+            type="button"
+            size="sm"
+            className="shrink-0 gap-1.5"
+            onClick={openNewFindingModal}
+          >
             <Plus className="h-4 w-4" />
             Add QA item
           </Button>
@@ -1541,7 +2131,7 @@ export function QAPage() {
                 <p className="mt-1 text-sm text-muted-foreground">
                   Add a QA item with screenshots, Figma, ticket, and assignee.
                 </p>
-                <Button type="button" variant="secondary" className="mt-4 gap-1.5" onClick={openNewFinding}>
+                <Button type="button" variant="secondary" className="mt-4 gap-1.5" onClick={openNewFindingModal}>
                   <Plus className="h-4 w-4" />
                   Add QA item
                 </Button>
@@ -1557,15 +2147,33 @@ export function QAPage() {
             ) : (
               <ul className="space-y-3">
                 {filteredFindings.map((f) => (
-                  <li key={f.id} className="overflow-hidden rounded-xl border bg-card shadow-sm">
-                    <div className="flex flex-wrap items-start justify-between gap-2 p-3 sm:p-4">
+                  <li
+                    key={f.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openFindingModal(f)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        openFindingModal(f)
+                      }
+                    }}
+                    className="overflow-hidden rounded-xl border bg-card shadow-sm outline-none transition-colors hover:bg-muted/20 focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2 p-3 sm:px-4 sm:pt-4 sm:pb-3">
                       <div className="min-w-0 flex-1 space-y-2">
+                        <h2 className="text-sm font-semibold leading-snug sm:text-base">{f.title}</h2>
+                        {f.description?.trim() ? (
+                          <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+                            {qaFindingBodyPlain(f.description)}
+                          </p>
+                        ) : null}
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <h2 className="text-sm font-semibold leading-snug sm:text-base">{f.title}</h2>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <button
                                 type="button"
+                                onClick={(e) => e.stopPropagation()}
                                 className={cn(
                                   cardChipRounded,
                                   'inline-flex h-auto max-w-[11rem] shrink-0 cursor-pointer items-center gap-1.5 truncate border border-neutral-300 bg-white px-2.5 py-0.5 text-xs font-medium text-foreground shadow-none transition-colors hover:bg-neutral-50 dark:border-neutral-600 dark:bg-neutral-950 dark:text-neutral-100 dark:hover:bg-neutral-900',
@@ -1596,6 +2204,7 @@ export function QAPage() {
                             <DropdownMenuTrigger asChild>
                               <button
                                 type="button"
+                                onClick={(e) => e.stopPropagation()}
                                 className={cn(
                                   badgeVariants({ variant: f.priority === 'critical' ? 'destructive' : 'outline' }),
                                   cardChipRounded,
@@ -1620,61 +2229,74 @@ export function QAPage() {
                               </DropdownMenuRadioGroup>
                             </DropdownMenuContent>
                           </DropdownMenu>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={(e) => e.stopPropagation()}
+                                className={cn(
+                                  badgeVariants({ variant: 'outline' }),
+                                  cardChipRounded,
+                                  'h-auto min-w-0 max-w-[12rem] shrink-0 cursor-pointer border px-2.5 py-0.5 text-xs font-medium transition-opacity hover:opacity-90',
+                                )}
+                              >
+                                <CategoryRow category={f.category} iconSize="sm" className="min-w-0" />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="start" className="w-56">
+                              <DropdownMenuLabel>Category</DropdownMenuLabel>
+                              <DropdownMenuRadioGroup
+                                value={f.category}
+                                onValueChange={(v) => patchFinding(f.id, { category: v as QaCategory })}
+                              >
+                                {QA_CATEGORIES.map((category) => (
+                                  <DropdownMenuRadioItem key={category} value={category}>
+                                    <CategoryRow category={category} iconSize="sm" />
+                                  </DropdownMenuRadioItem>
+                                ))}
+                              </DropdownMenuRadioGroup>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                           <FindingAssigneePopover
                             assignee={f.assignee}
                             suggestions={assigneeFilterOptions}
                             onSet={(value) => patchFinding(f.id, { assignee: value })}
                           />
                         </div>
-                        {f.description ? (
-                          <p className="whitespace-pre-wrap text-sm text-muted-foreground">{f.description}</p>
-                        ) : null}
-                        <div className="flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-0.5">
-                          <LinkRow href={f.figmaLink} label="Open Figma" icon={Frame} />
-                          <LinkRow href={f.ticketLink} label="Open ticket" icon={Ticket} />
-                        </div>
-                        {f.screenshots.length > 0 ? (
-                          <div className="flex flex-wrap gap-1.5">
-                            {f.screenshots.map((s) => (
-                              <button
-                                key={s.id}
-                                type="button"
-                                className="block h-28 w-40 overflow-hidden rounded-lg border bg-muted text-left ring-offset-2 outline-none transition-shadow hover:ring-2 hover:ring-ring focus-visible:ring-2 focus-visible:ring-ring"
-                                onClick={() => setScreenshotLightbox({ dataUrl: s.dataUrl, name: s.name })}
-                                aria-label={`View screenshot ${s.name} full screen`}
-                              >
-                                <img src={s.dataUrl} alt="" className="h-full w-full object-cover" />
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                        <FindingTagsPopover
-                          tags={f.tags}
-                          tagPool={tagFilterOptions}
-                          onSetTags={(next) => patchFinding(f.id, { tags: next })}
-                        />
                       </div>
                       <div className="flex shrink-0 flex-col items-end gap-1 sm:flex-row sm:items-start">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="h-8 shrink-0 gap-1 px-2 text-muted-foreground hover:text-foreground"
-                          aria-label={
-                            f.comments.length > 0
-                              ? `Comments, ${f.comments.length}`
-                              : 'Comments'
-                          }
-                          onClick={() => {
-                            setCommentsFindingId(f.id)
-                            setCommentAuthor((a) => a || loadLastAuthor())
-                            setCommentText('')
-                          }}
-                        >
-                          <MessageSquare className="h-4 w-4 shrink-0" />
-                          {f.comments.length > 0 ? (
-                            <span className="text-xs font-semibold tabular-nums">{f.comments.length}</span>
+                        <div className="flex shrink-0 items-center gap-0.5">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            className="h-8 shrink-0 gap-1 px-2 text-muted-foreground hover:text-foreground"
+                            aria-label={
+                              f.comments.length > 0
+                                ? `Comments, ${f.comments.length}`
+                                : 'Comments'
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setCommentAuthor((a) => a || loadLastAuthor())
+                              setCommentText('')
+                              openFindingModal(f)
+                            }}
+                          >
+                            <MessageSquare className="h-4 w-4 shrink-0" />
+                            {f.comments.length > 0 ? (
+                              <span className="text-xs font-semibold tabular-nums">{f.comments.length}</span>
+                            ) : null}
+                          </Button>
+                          {f.screenshots.length > 0 ? (
+                            <span
+                              className="inline-flex h-8 shrink-0 items-center gap-1 px-1.5 text-muted-foreground"
+                              aria-label={`Screenshots, ${f.screenshots.length}`}
+                            >
+                              <ImagePlus className="h-4 w-4 shrink-0" />
+                              <span className="text-xs font-semibold tabular-nums">{f.screenshots.length}</span>
+                            </span>
                           ) : null}
-                        </Button>
+                        </div>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
@@ -1683,20 +2305,27 @@ export function QAPage() {
                               size="icon"
                               className="h-8 w-8 shrink-0 text-muted-foreground"
                               aria-label="Finding actions"
+                              onClick={(e) => e.stopPropagation()}
                             >
                               <MoreVertical className="h-4 w-4" />
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-44">
-                            <DropdownMenuItem onClick={() => openEditFinding(f)}>
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                openFindingModal(f)
+                              }}
+                            >
                               <Pencil className="h-4 w-4" />
                               Edit
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               variant="destructive"
-                              onClick={() =>
+                              onClick={(e) => {
+                                e.stopPropagation()
                                 setFindingToDelete({ sessionId: activeSession.id, findingId: f.id })
-                              }
+                              }}
                             >
                               <Trash2 className="h-4 w-4" />
                               Delete
@@ -1705,46 +2334,56 @@ export function QAPage() {
                         </DropdownMenu>
                       </div>
                     </div>
-                    <footer className="border-t bg-muted/25 px-3 py-2 sm:px-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+                    <footer className="border-t bg-muted/50 px-3 py-1 sm:px-4">
+                      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+                        <div className="min-w-0 flex-1 text-xs text-muted-foreground">
                           {f.reporter?.trim() ? (
                             <>
                               Reported{' '}
                               <time dateTime={f.createdAt}>{formatReportedFooterTime(f.createdAt)}</time>
                               {' by '}
                               <span className="font-medium text-foreground/90">{f.reporter.trim()}</span>
+                              {' on '}
                             </>
                           ) : (
                             <>
                               Added <time dateTime={f.createdAt}>{formatReportedFooterTime(f.createdAt)}</time>
+                              {' on '}
                             </>
                           )}
-                        </p>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <button
-                              type="button"
-                              className="shrink-0 rounded-md px-2 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-                              aria-label="Environment"
-                            >
-                              {f.environment}
-                            </button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-40">
-                            <DropdownMenuLabel>Environment</DropdownMenuLabel>
-                            <DropdownMenuRadioGroup
-                              value={f.environment}
-                              onValueChange={(v) => patchFinding(f.id, { environment: v as QaEnvironment })}
-                            >
-                              {QA_ENVIRONMENTS.map((env) => (
-                                <DropdownMenuRadioItem key={env} value={env} className="font-mono text-xs">
-                                  {env}
-                                </DropdownMenuRadioItem>
-                              ))}
-                            </DropdownMenuRadioGroup>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={(e) => e.stopPropagation()}
+                                className="inline rounded px-0 font-mono text-xs text-muted-foreground"
+                                aria-label="Environment"
+                              >
+                                {f.environment}
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="start" className="w-40">
+                              <DropdownMenuLabel>Environment</DropdownMenuLabel>
+                              <DropdownMenuRadioGroup
+                                value={f.environment}
+                                onValueChange={(v) => patchFinding(f.id, { environment: v as QaEnvironment })}
+                              >
+                                {QA_ENVIRONMENTS.map((env) => (
+                                  <DropdownMenuRadioItem key={env} value={env} className="font-mono text-xs">
+                                    {env}
+                                  </DropdownMenuRadioItem>
+                                ))}
+                              </DropdownMenuRadioGroup>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                        <div className="ml-auto shrink-0" onClick={(e) => e.stopPropagation()}>
+                          <FindingTagsPopover
+                            tags={f.tags}
+                            tagPool={tagFilterOptions}
+                            onSetTags={(next) => patchFinding(f.id, { tags: next })}
+                          />
+                        </div>
                       </div>
                     </footer>
                   </li>

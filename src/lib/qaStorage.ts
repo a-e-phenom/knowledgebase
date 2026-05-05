@@ -14,6 +14,17 @@ export type QaEnvironment = 'STG' | 'STGIR' | 'INTQA' | 'PROD'
 
 export const QA_ENVIRONMENTS: QaEnvironment[] = ['STG', 'STGIR', 'INTQA', 'PROD']
 
+export type QaCategory = 'bugs' | 'UI' | 'Usability' | 'Logic' | 'missing functionality' | 'Improvement'
+
+export const QA_CATEGORIES: QaCategory[] = [
+  'bugs',
+  'UI',
+  'Usability',
+  'Logic',
+  'missing functionality',
+  'Improvement',
+]
+
 export type QaStatus = 'not_started' | 'in_progress' | 'blocked' | 'solved'
 
 export const QA_STATUSES: QaStatus[] = ['not_started', 'in_progress', 'blocked', 'solved']
@@ -30,6 +41,26 @@ export function qaStatusLabel(s: QaStatus): string {
       return 'Solved'
     default:
       return s
+  }
+}
+
+/** Human-readable category label (persisted values stay snake/lowercase keys). */
+export function qaCategoryLabel(c: QaCategory): string {
+  switch (c) {
+    case 'bugs':
+      return 'Bug'
+    case 'UI':
+      return 'UI'
+    case 'Usability':
+      return 'Usability'
+    case 'Logic':
+      return 'Logic'
+    case 'missing functionality':
+      return 'Missing Functionality'
+    case 'Improvement':
+      return 'Improvement'
+    default:
+      return c
   }
 }
 
@@ -60,11 +91,13 @@ export type QaScreenshot = {
 export type QaFinding = {
   id: string
   title: string
+  /** Rich page body (TipTap HTML). Card shows a plain-text preview. */
   description: string
   tags: string[]
   priority: QaPriority
   status: QaStatus
   environment: QaEnvironment
+  category: QaCategory
   comments: QaComment[]
   /** PNG/JPEG data URLs (compressed client-side) */
   screenshots: QaScreenshot[]
@@ -100,6 +133,17 @@ function isEnvironment(x: unknown): x is QaEnvironment {
   return x === 'STG' || x === 'STGIR' || x === 'INTQA' || x === 'PROD'
 }
 
+function isCategory(x: unknown): x is QaCategory {
+  return (
+    x === 'bugs' ||
+    x === 'UI' ||
+    x === 'Usability' ||
+    x === 'Logic' ||
+    x === 'missing functionality' ||
+    x === 'Improvement'
+  )
+}
+
 function parseComment(raw: unknown): QaComment | null {
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
@@ -127,6 +171,7 @@ function parseFinding(raw: unknown): QaFinding | null {
   const priority = isPriority(o.priority) ? o.priority : 'medium'
   const status = normalizeQaStatus(o.status)
   const environment = isEnvironment(o.environment) ? o.environment : 'STG'
+  const category = isCategory(o.category) ? o.category : 'bugs'
   const commentsRaw = Array.isArray(o.comments) ? o.comments : []
   const comments = commentsRaw.map(parseComment).filter((c): c is QaComment => c !== null)
   const createdAt = typeof o.createdAt === 'string' ? o.createdAt : new Date().toISOString()
@@ -145,6 +190,7 @@ function parseFinding(raw: unknown): QaFinding | null {
     priority,
     status,
     environment,
+    category,
     comments,
     screenshots,
     figmaLink,
@@ -241,6 +287,44 @@ export function newId(): string {
 
 export function normalizeTag(tag: string): string {
   return tag.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function stripHtmlToPlainText(html: string): string {
+  if (typeof document === 'undefined') {
+    return html.replace(/<[^>]+>/gi, ' ').replace(/\s+/g, ' ').trim()
+  }
+  const d = document.createElement('div')
+  d.innerHTML = html
+  return (d.textContent || '').replace(/\s+/g, ' ').trim()
+}
+
+/** Plain text for search / filters (handles legacy plain descriptions and TipTap HTML). */
+export function qaFindingBodyPlain(raw: string): string {
+  if (!raw.trim()) return ''
+  if (/<\s*[a-z]/i.test(raw)) return stripHtmlToPlainText(raw)
+  return raw.replace(/\s+/g, ' ').trim()
+}
+
+/** Short excerpt for the QA card (Notion-style snippet). */
+export function qaDescriptionPreview(raw: string, maxLen = 200): string {
+  const plain = qaFindingBodyPlain(raw)
+  if (!plain) return ''
+  return plain.length <= maxLen ? plain : `${plain.slice(0, maxLen - 1).trim()}…`
+}
+
+/** Normalize stored description for BlockEditor `content` (HTML or legacy plain / markdown-ish). */
+export function qaDescriptionAsEditorHtml(raw: string): string {
+  const t = raw.trim()
+  if (!t) return ''
+  if (/<\s*p[\s>/]/i.test(t) || /<\s*div[\s>/]/i.test(t) || /class="[^"]*docmost/i.test(t)) {
+    return raw
+  }
+  const escape = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return t
+    .split(/\n\n+/)
+    .map((block) => `<p>${escape(block).replace(/\n/g, '<br />')}</p>`)
+    .join('')
 }
 
 const MAX_SCREENSHOTS = 8

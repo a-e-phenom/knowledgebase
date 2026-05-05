@@ -171,6 +171,11 @@
   padding: 0.5rem 0;
 }
 
+/* Finding modal: body text editor should hug content (global rule is 500px for full pages). */
+.qa-finding-modal .docmost-editor {
+  min-height: 0 !important;
+}
+
 .docmost-editor > * + * {
   margin-top: 0.5em;
 }
