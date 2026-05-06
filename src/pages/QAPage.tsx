@@ -133,7 +133,7 @@ function formatNotionDateTime(iso: string) {
 }
 
 function NotionEmpty() {
-  return <span className="text-sm text-muted-foreground/80">Empty</span>
+  return <span className="text-sm text-muted-foreground/80">+ Add</span>
 }
 
 function NotionPropRow({
@@ -170,7 +170,7 @@ type FindingInlinePatch = Partial<
     | 'status'
     | 'priority'
     | 'environment'
-    | 'category'
+    | 'categories'
     | 'assignee'
     | 'tags'
     | 'title'
@@ -226,6 +226,18 @@ function StatusRow({ status }: { status: QaStatus }) {
     <span className="flex items-center gap-2">
       <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', statusDotClass(status))} aria-hidden />
       <span>{qaStatusLabel(status)}</span>
+    </span>
+  )
+}
+
+function CategorySelectionPreview({ categories }: { categories: QaCategory[] }) {
+  if (categories.length === 0) return <NotionEmpty />
+  const [first, ...rest] = categories
+  if (!first) return <NotionEmpty />
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <CategoryRow category={first} />
+      {rest.length > 0 ? <span className="shrink-0 text-xs text-muted-foreground">+{rest.length}</span> : null}
     </span>
   )
 }
@@ -303,8 +315,8 @@ function FindingTagsPopover({
   const triggerClass =
     appearance === 'notion'
       ? dense
-        ? 'flex h-7 w-full max-w-full items-center rounded-md px-1.5 py-0 text-left text-[13px] leading-snug transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
-        : 'flex min-h-9 w-full max-w-full items-center rounded-md px-1.5 py-1 text-left text-sm transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+        ? 'flex min-h-7 w-full max-w-full flex-wrap items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left text-[13px] leading-snug transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+        : 'flex min-h-9 w-full max-w-full flex-wrap items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-sm transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
       : 'group flex max-w-full flex-wrap items-center gap-1.5 rounded-md border border-dashed border-transparent px-0.5 py-0.5 text-left transition-colors hover:border-border hover:bg-muted/30'
 
   return (
@@ -315,7 +327,11 @@ function FindingTagsPopover({
             tags.length === 0 ? (
               <NotionEmpty />
             ) : (
-              <span className="truncate text-foreground">{tags.join(', ')}</span>
+              tags.map((t) => (
+                <span key={t} className={cn(badgeVariants({ variant: 'outline' }), cardChipRounded, 'font-normal')}>
+                  {t}
+                </span>
+              ))
             )
           ) : tags.length === 0 ? (
             <span
@@ -523,6 +539,8 @@ export function QAPage() {
 
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false)
   const [sessionName, setSessionName] = useState('')
+  const [renameSessionDialogOpen, setRenameSessionDialogOpen] = useState(false)
+  const [renameSessionName, setRenameSessionName] = useState('')
 
   const [findingDialogOpen, setFindingDialogOpen] = useState(false)
   const [editingFindingId, setEditingFindingId] = useState<string | null>(null)
@@ -531,7 +549,7 @@ export function QAPage() {
   const [findingPriority, setFindingPriority] = useState<QaPriority>('medium')
   const [findingStatus, setFindingStatus] = useState<QaStatus>('not_started')
   const [findingEnvironment, setFindingEnvironment] = useState<QaEnvironment>('STG')
-  const [findingCategory, setFindingCategory] = useState<QaCategory>('bugs')
+  const [findingCategories, setFindingCategories] = useState<QaCategory[]>(['bugs'])
   const [findingTags, setFindingTags] = useState<string[]>([])
   const [findingAssignee, setFindingAssignee] = useState('')
   const [findingReporter, setFindingReporter] = useState('')
@@ -563,6 +581,7 @@ export function QAPage() {
   const [filterReporters, setFilterReporters] = useState<string[]>([])
   const [filterTags, setFilterTags] = useState<string[]>([])
   const [filterEnvironments, setFilterEnvironments] = useState<QaEnvironment[]>([])
+  const [filterCategories, setFilterCategories] = useState<QaCategory[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -614,6 +633,7 @@ export function QAPage() {
     setFilterReporters([])
     setFilterTags([])
     setFilterEnvironments([])
+    setFilterCategories([])
     if (docSaveTimerRef.current) {
       window.clearTimeout(docSaveTimerRef.current)
       docSaveTimerRef.current = null
@@ -678,7 +698,7 @@ export function QAPage() {
     return activeSession.findings.filter((f) => {
       if (q) {
         const hay =
-          `${f.title}\n${qaFindingBodyPlain(f.description)}\n${f.environment}\n${f.category}\n${f.assignee}\n${f.reporter ?? ''}\n${f.tags.join('\n')}`.toLowerCase()
+          `${f.title}\n${qaFindingBodyPlain(f.description)}\n${f.environment}\n${f.categories.join('\n')}\n${f.assignee}\n${f.reporter ?? ''}\n${f.tags.join('\n')}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       if (filterStatuses.length > 0 && !filterStatuses.includes(f.status)) return false
@@ -696,6 +716,7 @@ export function QAPage() {
         if (!any) return false
       }
       if (filterEnvironments.length > 0 && !filterEnvironments.includes(f.environment)) return false
+      if (filterCategories.length > 0 && !f.categories.some((c) => filterCategories.includes(c))) return false
       return true
     })
   }, [
@@ -707,6 +728,7 @@ export function QAPage() {
     filterReporters,
     filterTags,
     filterEnvironments,
+    filterCategories,
   ])
 
   const patchFinding = useCallback(
@@ -812,7 +834,7 @@ export function QAPage() {
     setFindingPriority('medium')
     setFindingStatus('not_started')
     setFindingEnvironment('STG')
-    setFindingCategory('bugs')
+    setFindingCategories(['bugs'])
     setFindingTags([])
     setFindingAssignee('')
     setFindingReporter('')
@@ -831,9 +853,19 @@ export function QAPage() {
       filterAssignees.length > 0 ||
       filterReporters.length > 0 ||
       filterTags.length > 0 ||
-      filterEnvironments.length > 0
+      filterEnvironments.length > 0 ||
+      filterCategories.length > 0
     )
-  }, [filterSearch, filterStatuses, filterPriorities, filterAssignees, filterReporters, filterTags, filterEnvironments])
+  }, [
+    filterSearch,
+    filterStatuses,
+    filterPriorities,
+    filterAssignees,
+    filterReporters,
+    filterTags,
+    filterEnvironments,
+    filterCategories,
+  ])
 
   const clearFilters = () => {
     setFilterSearch('')
@@ -843,11 +875,18 @@ export function QAPage() {
     setFilterReporters([])
     setFilterTags([])
     setFilterEnvironments([])
+    setFilterCategories([])
   }
 
   const openNewSession = () => {
     setSessionName('')
     setSessionDialogOpen(true)
+  }
+
+  const openRenameSessionDialog = () => {
+    if (!activeSession) return
+    setRenameSessionName(activeSession.name)
+    setRenameSessionDialogOpen(true)
   }
 
   const createSession = () => {
@@ -863,6 +902,21 @@ export function QAPage() {
     setSessionDialogOpen(false)
     toast.success('QA page started')
     navigate(`/qa/${id}`)
+  }
+
+  const renameSession = () => {
+    if (!activeSession) return
+    const name = renameSessionName.trim()
+    if (!name) {
+      toast.error('Enter a name for this QA page')
+      return
+    }
+    setState((prev) => ({
+      ...prev,
+      sessions: prev.sessions.map((s) => (s.id === activeSession.id ? { ...s, name } : s)),
+    }))
+    setRenameSessionDialogOpen(false)
+    toast.success('QA page renamed')
   }
 
   const confirmDeleteSession = () => {
@@ -965,7 +1019,7 @@ export function QAPage() {
       priority: findingPriority,
       status: findingStatus,
       environment: findingEnvironment,
-      category: findingCategory,
+      categories: findingCategories,
       comments: [],
       screenshots: findingScreenshots,
       figmaLink,
@@ -1158,6 +1212,33 @@ export function QAPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={renameSessionDialogOpen} onOpenChange={setRenameSessionDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rename QA page</DialogTitle>
+            <DialogDescription>Update the name of this QA page.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="qa-session-rename-name">Page name</Label>
+            <Input
+              id="qa-session-rename-name"
+              placeholder="e.g. v2.4 regression — checkout"
+              value={renameSessionName}
+              onChange={(e) => setRenameSessionName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && renameSession()}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => setRenameSessionDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={renameSession}>
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!screenshotLightbox} onOpenChange={(open) => !open && setScreenshotLightbox(null)}>
         <DialogContent
           showCloseButton
@@ -1285,7 +1366,7 @@ export function QAPage() {
                         id="qa-modal-reporter"
                         value={modalFinding.reporter ?? ''}
                         onChange={(e) => patchFinding(modalFinding.id, { reporter: e.target.value })}
-                        placeholder="Empty"
+                        placeholder="+ Add"
                         className={notionModalValueInput}
                         aria-label="Reporter"
                       />
@@ -1322,21 +1403,28 @@ export function QAPage() {
                             type="button"
                             className={cn(notionModalPropControl, 'gap-2 text-foreground')}
                           >
-                            <CategoryRow category={modalFinding.category} />
+                            <CategorySelectionPreview categories={modalFinding.categories} />
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start" className="w-56">
                           <DropdownMenuLabel>Category</DropdownMenuLabel>
-                          <DropdownMenuRadioGroup
-                            value={modalFinding.category}
-                            onValueChange={(v) => patchFinding(modalFinding.id, { category: v as QaCategory })}
-                          >
-                            {QA_CATEGORIES.map((category) => (
-                              <DropdownMenuRadioItem key={category} value={category}>
-                                <CategoryRow category={category} iconSize="sm" />
-                              </DropdownMenuRadioItem>
-                            ))}
-                          </DropdownMenuRadioGroup>
+                          {QA_CATEGORIES.map((category) => (
+                            <DropdownMenuCheckboxItem
+                              key={category}
+                              checked={modalFinding.categories.includes(category)}
+                              onCheckedChange={() =>
+                                patchFinding(modalFinding.id, {
+                                  categories: modalFinding.categories.includes(category)
+                                    ? modalFinding.categories.length > 1
+                                      ? modalFinding.categories.filter((c) => c !== category)
+                                      : modalFinding.categories
+                                    : [...modalFinding.categories, category],
+                                })
+                              }
+                            >
+                              <CategoryRow category={category} iconSize="sm" />
+                            </DropdownMenuCheckboxItem>
+                          ))}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </NotionPropRow>
@@ -1346,7 +1434,7 @@ export function QAPage() {
                         value={modalFinding.figmaLink}
                         onChange={(e) => patchFinding(modalFinding.id, { figmaLink: e.target.value })}
                         onBlur={(e) => patchFinding(modalFinding.id, { figmaLink: normalizeLink(e.target.value) })}
-                        placeholder="Empty"
+                        placeholder="+ Add"
                         className={notionModalValueInput}
                         aria-label="Figma link"
                       />
@@ -1357,7 +1445,7 @@ export function QAPage() {
                         value={modalFinding.ticketLink}
                         onChange={(e) => patchFinding(modalFinding.id, { ticketLink: e.target.value })}
                         onBlur={(e) => patchFinding(modalFinding.id, { ticketLink: normalizeLink(e.target.value) })}
-                        placeholder="Empty"
+                        placeholder="+ Add"
                         className={notionModalValueInput}
                         aria-label="Ticket link"
                       />
@@ -1614,7 +1702,7 @@ export function QAPage() {
                         id="qa-new-reporter"
                         value={findingReporter}
                         onChange={(e) => setFindingReporter(e.target.value)}
-                        placeholder="Empty"
+                        placeholder="+ Add"
                         className={notionModalValueInput}
                         aria-label="Reporter"
                       />
@@ -1651,21 +1739,28 @@ export function QAPage() {
                             type="button"
                             className={cn(notionModalPropControl, 'gap-2 text-foreground')}
                           >
-                            <CategoryRow category={findingCategory} />
+                            <CategorySelectionPreview categories={findingCategories} />
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start" className="w-56">
                           <DropdownMenuLabel>Category</DropdownMenuLabel>
-                          <DropdownMenuRadioGroup
-                            value={findingCategory}
-                            onValueChange={(v) => setFindingCategory(v as QaCategory)}
-                          >
-                            {QA_CATEGORIES.map((category) => (
-                              <DropdownMenuRadioItem key={category} value={category}>
-                                <CategoryRow category={category} iconSize="sm" />
-                              </DropdownMenuRadioItem>
-                            ))}
-                          </DropdownMenuRadioGroup>
+                          {QA_CATEGORIES.map((category) => (
+                            <DropdownMenuCheckboxItem
+                              key={category}
+                              checked={findingCategories.includes(category)}
+                              onCheckedChange={() =>
+                                setFindingCategories((prev) =>
+                                  prev.includes(category)
+                                    ? prev.length > 1
+                                      ? prev.filter((c) => c !== category)
+                                      : prev
+                                    : [...prev, category],
+                                )
+                              }
+                            >
+                              <CategoryRow category={category} iconSize="sm" />
+                            </DropdownMenuCheckboxItem>
+                          ))}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </NotionPropRow>
@@ -1674,7 +1769,7 @@ export function QAPage() {
                         id="qa-new-figma"
                         value={findingFigmaLink}
                         onChange={(e) => setFindingFigmaLink(e.target.value)}
-                        placeholder="Empty"
+                        placeholder="+ Add"
                         className={notionModalValueInput}
                         aria-label="Figma link"
                       />
@@ -1684,7 +1779,7 @@ export function QAPage() {
                         id="qa-new-ticket"
                         value={findingTicketLink}
                         onChange={(e) => setFindingTicketLink(e.target.value)}
-                        placeholder="Empty"
+                        placeholder="+ Add"
                         className={notionModalValueInput}
                         aria-label="Ticket link"
                       />
@@ -1878,12 +1973,16 @@ export function QAPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem onClick={openRenameSessionDialog}>
+                <Pencil className="h-4 w-4" />
+                Rename page
+              </DropdownMenuItem>
               <DropdownMenuItem
                 variant="destructive"
                 onClick={() => setSessionToDelete(activeSession)}
               >
                 <Trash2 className="h-4 w-4" />
-                Delete this QA page
+                Delete page
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -1990,6 +2089,36 @@ export function QAPage() {
                         className="font-mono text-xs"
                       >
                         {env}
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" className="h-8 gap-1">
+                      Category
+                      {filterCategories.length > 0 ? (
+                        <Badge variant="secondary" className="h-5 min-w-5 px-1 text-[10px]">
+                          {filterCategories.length}
+                        </Badge>
+                      ) : null}
+                      <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-56">
+                    <DropdownMenuLabel>Category</DropdownMenuLabel>
+                    {QA_CATEGORIES.map((category) => (
+                      <DropdownMenuCheckboxItem
+                        key={category}
+                        checked={filterCategories.includes(category)}
+                        onCheckedChange={() =>
+                          setFilterCategories((prev) =>
+                            prev.includes(category) ? prev.filter((x) => x !== category) : [...prev, category],
+                          )
+                        }
+                      >
+                        <CategoryRow category={category} iconSize="sm" />
                       </DropdownMenuCheckboxItem>
                     ))}
                   </DropdownMenuContent>
@@ -2151,8 +2280,19 @@ export function QAPage() {
                     key={f.id}
                     role="button"
                     tabIndex={0}
-                    onClick={() => openFindingModal(f)}
+                    onClick={(e) => {
+                      const target = e.target as HTMLElement
+                      if (
+                        target.closest(
+                          'button, input, textarea, select, a, [role^="menuitem"], [contenteditable="true"], [data-slot="dropdown-menu-trigger"]',
+                        )
+                      ) {
+                        return
+                      }
+                      openFindingModal(f)
+                    }}
                     onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault()
                         openFindingModal(f)
@@ -2240,21 +2380,28 @@ export function QAPage() {
                                   'h-auto min-w-0 max-w-[12rem] shrink-0 cursor-pointer border px-2.5 py-0.5 text-xs font-medium transition-opacity hover:opacity-90',
                                 )}
                               >
-                                <CategoryRow category={f.category} iconSize="sm" className="min-w-0" />
+                                <CategorySelectionPreview categories={f.categories} />
                               </button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start" className="w-56">
                               <DropdownMenuLabel>Category</DropdownMenuLabel>
-                              <DropdownMenuRadioGroup
-                                value={f.category}
-                                onValueChange={(v) => patchFinding(f.id, { category: v as QaCategory })}
-                              >
-                                {QA_CATEGORIES.map((category) => (
-                                  <DropdownMenuRadioItem key={category} value={category}>
-                                    <CategoryRow category={category} iconSize="sm" />
-                                  </DropdownMenuRadioItem>
-                                ))}
-                              </DropdownMenuRadioGroup>
+                              {QA_CATEGORIES.map((category) => (
+                                <DropdownMenuCheckboxItem
+                                  key={category}
+                                  checked={f.categories.includes(category)}
+                                  onCheckedChange={() =>
+                                    patchFinding(f.id, {
+                                      categories: f.categories.includes(category)
+                                        ? f.categories.length > 1
+                                          ? f.categories.filter((c) => c !== category)
+                                          : f.categories
+                                        : [...f.categories, category],
+                                    })
+                                  }
+                                >
+                                  <CategoryRow category={category} iconSize="sm" />
+                                </DropdownMenuCheckboxItem>
+                              ))}
                             </DropdownMenuContent>
                           </DropdownMenu>
                           <FindingAssigneePopover

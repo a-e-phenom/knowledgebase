@@ -97,7 +97,7 @@ export type QaFinding = {
   priority: QaPriority
   status: QaStatus
   environment: QaEnvironment
-  category: QaCategory
+  categories: QaCategory[]
   comments: QaComment[]
   /** PNG/JPEG data URLs (compressed client-side) */
   screenshots: QaScreenshot[]
@@ -144,6 +144,15 @@ function isCategory(x: unknown): x is QaCategory {
   )
 }
 
+function parseCategories(raw: unknown): QaCategory[] {
+  if (Array.isArray(raw)) {
+    const parsed = raw.filter(isCategory)
+    return parsed.length > 0 ? [...new Set(parsed)] : ['bugs']
+  }
+  if (isCategory(raw)) return [raw]
+  return ['bugs']
+}
+
 function parseComment(raw: unknown): QaComment | null {
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
@@ -171,7 +180,8 @@ function parseFinding(raw: unknown): QaFinding | null {
   const priority = isPriority(o.priority) ? o.priority : 'medium'
   const status = normalizeQaStatus(o.status)
   const environment = isEnvironment(o.environment) ? o.environment : 'STG'
-  const category = isCategory(o.category) ? o.category : 'bugs'
+  // Support both new `categories` array and legacy single `category`.
+  const categories = parseCategories(Array.isArray(o.categories) ? o.categories : o.category)
   const commentsRaw = Array.isArray(o.comments) ? o.comments : []
   const comments = commentsRaw.map(parseComment).filter((c): c is QaComment => c !== null)
   const createdAt = typeof o.createdAt === 'string' ? o.createdAt : new Date().toISOString()
@@ -190,7 +200,7 @@ function parseFinding(raw: unknown): QaFinding | null {
     priority,
     status,
     environment,
-    category,
+    categories,
     comments,
     screenshots,
     figmaLink,
