@@ -1,6 +1,7 @@
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 import { supabase } from '@/lib/supabase'
+import { getActiveWorkspaceId } from '@/lib/workspaces'
 
 export type ModuleIcon = 'bot' | 'file-text' | 'sparkles' | 'book-open' | 'zap' | 'message-square' | 'search'
 
@@ -81,6 +82,7 @@ const LEGACY_STORAGE_KEY = 'modules_v2'
 
 /** Rows from Supabase: overrides + custom modules (not the code-only builtins). */
 let remoteCustom: Module[] = []
+let useScopedWorkspaceModules: boolean | null = null
 
 function normalizeKnowledge(knowledge?: Partial<ModuleKnowledge> | null): ModuleKnowledge {
   return {
@@ -106,12 +108,29 @@ function rowToModule(row: { id: string; data: unknown }): Module {
 }
 
 async function reloadFromDatabase(): Promise<void> {
-  const { data, error } = await supabase
-    .from('workspace_modules')
-    .select('id, data')
-    .order('id')
+  const workspaceId = getActiveWorkspaceId()
+  if (useScopedWorkspaceModules !== false) {
+    const { data, error } = await supabase
+      .from('workspace_modules')
+      .select('id, data')
+      .eq('workspace_id', workspaceId)
+      .order('id')
+    if (!error) {
+      useScopedWorkspaceModules = true
+      remoteCustom = (data ?? []).map(rowToModule)
+      return
+    }
+    if (error.message.includes('workspace_id')) {
+      useScopedWorkspaceModules = false
+    } else {
+      console.error('[moduleSettings] scoped load failed', error.message)
+      remoteCustom = []
+      return
+    }
+  }
+  const { data, error } = await supabase.from('workspace_modules').select('id, data').order('id')
   if (error) {
-    console.error('[moduleSettings] load failed', error.message)
+    console.error('[moduleSettings] legacy load failed', error.message)
     remoteCustom = []
     return
   }
@@ -120,15 +139,21 @@ async function reloadFromDatabase(): Promise<void> {
 
 async function migrateLegacyLocalStorageOnce(): Promise<void> {
   try {
+    const workspaceId = getActiveWorkspaceId()
     const raw = localStorage.getItem(LEGACY_STORAGE_KEY)
     if (!raw) return
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed) || parsed.length === 0) return
     const rows = parsed
       .filter((m): m is Module => m && typeof (m as Module).id === 'string')
-      .map((m) => ({ id: m.id, data: m as unknown as Record<string, unknown> }))
+      .map((m) => ({ workspace_id: workspaceId, id: m.id, data: m as unknown as Record<string, unknown> }))
     if (rows.length === 0) return
-    const { error } = await supabase.from('workspace_modules').upsert(rows)
+    const { error } =
+      useScopedWorkspaceModules === false
+        ? await supabase
+            .from('workspace_modules')
+            .upsert(rows.map(({ id, data }) => ({ id, data })))
+        : await supabase.from('workspace_modules').upsert(rows)
     if (!error) localStorage.removeItem(LEGACY_STORAGE_KEY)
   } catch {
     /* ignore */
@@ -169,6 +194,25 @@ export function getModule(id: string): Module | undefined {
 
 /** Save (create or update) a module. Builtin flag is preserved for builtins. */
 export async function saveModule(module: Module): Promise<void> {
+  const workspaceId = getActiveWorkspaceId()
+  if (useScopedWorkspaceModules !== false) {
+    const { error } = await supabase.from('workspace_modules').upsert(
+      {
+        workspace_id: workspaceId,
+        id: module.id,
+        data: module as unknown as Record<string, unknown>,
+      },
+      { onConflict: 'workspace_id,id' },
+    )
+    if (!error) {
+      useScopedWorkspaceModules = true
+      await reloadFromDatabase()
+      return
+    }
+    if (!error.message.includes('workspace_id')) throw error
+    useScopedWorkspaceModules = false
+  }
+
   const { error } = await supabase.from('workspace_modules').upsert({
     id: module.id,
     data: module as unknown as Record<string, unknown>,
@@ -179,6 +223,22 @@ export async function saveModule(module: Module): Promise<void> {
 
 /** Delete a module row by id (custom modules; removing a builtin id deletes a stored override only). */
 export async function deleteModule(id: string): Promise<void> {
+  const workspaceId = getActiveWorkspaceId()
+  if (useScopedWorkspaceModules !== false) {
+    const { error } = await supabase
+      .from('workspace_modules')
+      .delete()
+      .eq('workspace_id', workspaceId)
+      .eq('id', id)
+    if (!error) {
+      useScopedWorkspaceModules = true
+      await reloadFromDatabase()
+      return
+    }
+    if (!error.message.includes('workspace_id')) throw error
+    useScopedWorkspaceModules = false
+  }
+
   const { error } = await supabase.from('workspace_modules').delete().eq('id', id)
   if (error) throw error
   await reloadFromDatabase()

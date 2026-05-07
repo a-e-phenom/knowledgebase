@@ -36,7 +36,7 @@ import {
 import { CREATE_PROTOTYPE_MODULE_ID } from '@/lib/createPrototypeSchema'
 import { ModuleIconComponent } from '@/components/ModuleIconComponent'
 import { AppHeader } from '@/components/AppHeader'
-import { SHARED_WORKSPACE_USER_ID } from '@/lib/sharedWorkspace'
+import { getActiveWorkspaceId } from '@/lib/workspaces'
 import { cn } from '@/lib/utils'
 
 const DEFAULT_INSTRUCTIONS = 'You are a helpful AI assistant. Answer questions clearly and concisely.'
@@ -47,6 +47,7 @@ type FolderOption = { id: string; name: string; parent_id: string | null }
 type SettingsTab = 'persona' | 'knowledge' | 'output'
 
 export function ModuleSettingsPage() {
+  const workspaceId = getActiveWorkspaceId()
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const isNew = id === 'new'
@@ -159,12 +160,12 @@ export function ModuleSettingsPage() {
       supabase
         .from('folders')
         .select('id, name, parent_id')
-        .eq('user_id', SHARED_WORKSPACE_USER_ID)
+        .eq('user_id', workspaceId)
         .order('name'),
       supabase
         .from('documents')
         .select('id, title, folder_id, file_name')
-        .eq('user_id', SHARED_WORKSPACE_USER_ID)
+        .eq('user_id', workspaceId)
         .order('title'),
     ])
 
@@ -179,7 +180,7 @@ export function ModuleSettingsPage() {
         ? documents.filter((doc) => doc.folder_id === skillsFolder.id)
         : [],
     )
-  }, [])
+  }, [workspaceId])
 
   useEffect(() => {
     let cancelled = false

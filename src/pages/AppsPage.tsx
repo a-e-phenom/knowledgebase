@@ -164,10 +164,7 @@ export function AppsPage() {
           </div>
         ) : apps.length === 0 ? (
           <p className="text-sm text-muted-foreground py-8">
-            No apps yet. Use <span className="font-medium text-foreground">Add app</span> to create one. If the list
-            stays empty, apply the migration{' '}
-            <code className="text-xs bg-muted px-1 py-0.5 rounded">20260414130000_workspace_apps.sql</code> in
-            Supabase.
+            No apps yet. Use <span className="font-medium text-foreground">Add app</span> to create one.
           </p>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

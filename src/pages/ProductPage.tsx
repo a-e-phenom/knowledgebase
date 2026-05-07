@@ -22,11 +22,10 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import {
-  loadProductStandupState,
+  defaultProductStandupState,
   saveProductStandupState,
   fetchProductStandupFromSupabase,
   persistProductStandupToSupabase,
-  migrateProductStandupLocalToSupabaseOnce,
   dateKeyFromDate,
   parseDateKey,
   type ProductMember,
@@ -83,7 +82,7 @@ function formatSubmissionTime(iso: string) {
 }
 
 export function ProductPage() {
-  const [state, setState] = useState<ProductStandupState>(() => loadProductStandupState())
+  const [state, setState] = useState<ProductStandupState>(() => defaultProductStandupState())
   const [standupRemoteReady, setStandupRemoteReady] = useState(false)
   const remoteSaveEnabledRef = useRef(true)
   const [selectedDayKey, setSelectedDayKey] = useState(() => dateKeyFromDate(new Date()))
@@ -99,7 +98,6 @@ export function ProductPage() {
     let cancelled = false
     void (async () => {
       try {
-        await migrateProductStandupLocalToSupabaseOnce()
         const s = await fetchProductStandupFromSupabase()
         if (!cancelled) {
           setState(s)
@@ -109,7 +107,7 @@ export function ProductPage() {
         const msg = e instanceof Error ? e.message : 'Unknown error'
         toast.error('Could not load Product standup', { description: msg })
         if (!cancelled) {
-          setState(loadProductStandupState())
+          setState(defaultProductStandupState())
           remoteSaveEnabledRef.current = false
         }
       } finally {
@@ -252,7 +250,7 @@ export function ProductPage() {
         <AppHeader />
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-16 text-center">
           <p className="text-sm font-medium text-muted-foreground">Loading Product standup…</p>
-          <p className="max-w-sm text-xs text-muted-foreground">Syncing with your shared Supabase workspace.</p>
+          <p className="max-w-sm text-xs text-muted-foreground">Syncing with database....</p>
         </div>
       </div>
     )

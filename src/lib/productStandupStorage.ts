@@ -3,8 +3,14 @@ import {
   fetchWorkspaceAppDataJson,
   upsertWorkspaceAppDataJson,
 } from '@/lib/workspaceAppData'
+import { DEFAULT_WORKSPACE_ID, getActiveWorkspaceId } from '@/lib/workspaces'
 
 const STORAGE_KEY = 'docHub-product-standup-v1'
+
+function scopedStorageKey(): string {
+  const workspaceId = getActiveWorkspaceId()
+  return workspaceId === DEFAULT_WORKSPACE_ID ? STORAGE_KEY : `${STORAGE_KEY}:${workspaceId}`
+}
 
 export type ProductMember = {
   id: string
@@ -69,7 +75,7 @@ export function parseProductStandupPayload(parsed: unknown): ProductStandupState
 
 function readProductStandupFromLocalStorage(): ProductStandupState | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(scopedStorageKey())
     if (!raw) return null
     return parseProductStandupPayload(JSON.parse(raw) as unknown)
   } catch {
@@ -83,7 +89,7 @@ export function loadProductStandupState(): ProductStandupState {
 
 export function saveProductStandupState(state: ProductStandupState) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    localStorage.setItem(scopedStorageKey(), JSON.stringify(state))
   } catch {
     /* ignore quota */
   }
@@ -108,7 +114,7 @@ export async function migrateProductStandupLocalToSupabaseOnce(): Promise<void> 
   if (!local || (local.members.length === 0 && local.submissions.length === 0)) return
   await persistProductStandupToSupabase(local)
   try {
-    localStorage.removeItem(STORAGE_KEY)
+    localStorage.removeItem(scopedStorageKey())
   } catch {
     /* ignore */
   }

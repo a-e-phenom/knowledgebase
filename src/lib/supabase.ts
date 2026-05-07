@@ -116,16 +116,19 @@ export type Database = {
       workspace_modules: {
         Row: {
           id: string
+          workspace_id: string
           data: Record<string, unknown>
           updated_at: string
         }
         Insert: {
           id: string
+          workspace_id?: string
           data: Record<string, unknown>
           updated_at?: string
         }
         Update: {
           id?: string
+          workspace_id?: string
           data?: Record<string, unknown>
           updated_at?: string
         }
@@ -133,6 +136,7 @@ export type Database = {
       workspace_apps: {
         Row: {
           id: string
+          workspace_id: string
           title: string
           description: string
           link: string
@@ -140,6 +144,7 @@ export type Database = {
         }
         Insert: {
           id?: string
+          workspace_id?: string
           title: string
           description?: string
           link: string
@@ -147,6 +152,7 @@ export type Database = {
         }
         Update: {
           id?: string
+          workspace_id?: string
           title?: string
           description?: string
           link?: string
@@ -156,17 +162,40 @@ export type Database = {
       workspace_app_data: {
         Row: {
           id: string
+          workspace_id: string
           data: Record<string, unknown>
           updated_at: string
         }
         Insert: {
           id: string
+          workspace_id?: string
           data: Record<string, unknown>
           updated_at?: string
         }
         Update: {
           id?: string
+          workspace_id?: string
           data?: Record<string, unknown>
+          updated_at?: string
+        }
+      }
+      workspaces: {
+        Row: {
+          id: string
+          name: string
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          name?: string
+          created_at?: string
           updated_at?: string
         }
       }

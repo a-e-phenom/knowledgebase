@@ -3,6 +3,8 @@ import {
   fetchWorkspaceAppDataJson,
   upsertWorkspaceAppDataJson,
 } from '@/lib/workspaceAppData'
+import { supabase } from '@/lib/supabase'
+import { getActiveWorkspaceId } from '@/lib/workspaces'
 
 const STORAGE_KEY = 'docHub-qa-v2'
 
@@ -264,11 +266,14 @@ export function saveQaState(state: QaState) {
 
 /** Load QA state from Supabase (empty object if missing or invalid). */
 export async function fetchQaStateFromSupabase(): Promise<QaState> {
+  const normalized = await fetchQaStateFromNormalizedTables()
+  if (normalized) return normalized
   const raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA)
   return parseQaStatePayload(raw) ?? defaultQaState()
 }
 
 export async function persistQaStateToSupabase(state: QaState): Promise<void> {
+  await persistQaStateToNormalizedTables(state)
   await upsertWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA, state as unknown as Record<string, unknown>)
 }
 
@@ -287,6 +292,268 @@ export async function migrateQaLocalStorageToSupabaseOnce(): Promise<void> {
     localStorage.removeItem(LEGACY_KEY)
   } catch {
     /* ignore */
+  }
+}
+
+type QaSessionRow = {
+  workspace_id: string
+  id: string
+  name: string
+  created_at: string
+}
+
+type QaFindingRow = {
+  workspace_id: string
+  id: string
+  session_id: string
+  title: string
+  description: string
+  tags: string[] | null
+  priority: string
+  status: string
+  environment: string
+  categories: string[] | null
+  figma_link: string
+  ticket_link: string
+  assignee: string
+  reporter: string
+  created_at: string
+  updated_at: string
+}
+
+type QaCommentRow = {
+  workspace_id: string
+  id: string
+  finding_id: string
+  author: string
+  text: string
+  created_at: string
+}
+
+type QaScreenshotRow = {
+  workspace_id: string
+  id: string
+  finding_id: string
+  name: string
+  data_url: string
+  created_at: string
+}
+
+function isMissingQaTablesError(message: string): boolean {
+  return /qa_sessions|qa_findings|qa_comments|qa_screenshots/i.test(message)
+}
+
+function mapQaRowsToState(
+  sessions: QaSessionRow[],
+  findings: QaFindingRow[],
+  comments: QaCommentRow[],
+  screenshots: QaScreenshotRow[],
+): QaState {
+  const commentsByFinding = new Map<string, QaComment[]>()
+  comments.forEach((c) => {
+    const list = commentsByFinding.get(c.finding_id) ?? []
+    list.push({
+      id: c.id,
+      author: c.author,
+      text: c.text,
+      createdAt: c.created_at,
+    })
+    commentsByFinding.set(c.finding_id, list)
+  })
+
+  const screenshotsByFinding = new Map<string, QaScreenshot[]>()
+  screenshots.forEach((s) => {
+    const list = screenshotsByFinding.get(s.finding_id) ?? []
+    list.push({
+      id: s.id,
+      name: s.name,
+      dataUrl: s.data_url,
+      createdAt: s.created_at,
+    })
+    screenshotsByFinding.set(s.finding_id, list)
+  })
+
+  const findingsBySession = new Map<string, QaFinding[]>()
+  findings.forEach((f) => {
+    const list = findingsBySession.get(f.session_id) ?? []
+    list.push({
+      id: f.id,
+      title: f.title,
+      description: f.description ?? '',
+      tags: Array.isArray(f.tags) ? f.tags : [],
+      priority: isPriority(f.priority) ? f.priority : 'medium',
+      status: normalizeQaStatus(f.status),
+      environment: isEnvironment(f.environment) ? f.environment : 'STG',
+      categories: parseCategories(f.categories),
+      comments: commentsByFinding.get(f.id) ?? [],
+      screenshots: screenshotsByFinding.get(f.id) ?? [],
+      figmaLink: f.figma_link ?? '',
+      ticketLink: f.ticket_link ?? '',
+      assignee: f.assignee ?? '',
+      reporter: f.reporter ?? '',
+      createdAt: f.created_at,
+      updatedAt: f.updated_at,
+    })
+    findingsBySession.set(f.session_id, list)
+  })
+
+  return {
+    sessions: sessions.map((s) => ({
+      id: s.id,
+      name: s.name,
+      createdAt: s.created_at,
+      findings: findingsBySession.get(s.id) ?? [],
+    })),
+  }
+}
+
+async function fetchQaStateFromNormalizedTables(): Promise<QaState | null> {
+  const workspaceId = getActiveWorkspaceId()
+  const { data: sessionRows, error: sessionsError } = await supabase
+    .from('qa_sessions')
+    .select('workspace_id, id, name, created_at')
+    .eq('workspace_id', workspaceId)
+    .order('created_at', { ascending: false })
+  if (sessionsError) {
+    if (isMissingQaTablesError(sessionsError.message)) return null
+    throw sessionsError
+  }
+  const sessions = (sessionRows ?? []) as QaSessionRow[]
+  if (sessions.length === 0) return { sessions: [] }
+
+  const sessionIds = sessions.map((s) => s.id)
+  const { data: findingRows, error: findingsError } = await supabase
+    .from('qa_findings')
+    .select(
+      'workspace_id, id, session_id, title, description, tags, priority, status, environment, categories, figma_link, ticket_link, assignee, reporter, created_at, updated_at',
+    )
+    .eq('workspace_id', workspaceId)
+    .in('session_id', sessionIds)
+    .order('created_at', { ascending: false })
+  if (findingsError) {
+    if (isMissingQaTablesError(findingsError.message)) return null
+    throw findingsError
+  }
+  const findings = (findingRows ?? []) as QaFindingRow[]
+  const findingIds = findings.map((f) => f.id)
+
+  let comments: QaCommentRow[] = []
+  let screenshots: QaScreenshotRow[] = []
+  if (findingIds.length > 0) {
+    const [{ data: commentRows, error: commentsError }, { data: screenshotRows, error: screenshotsError }] =
+      await Promise.all([
+        supabase
+          .from('qa_comments')
+          .select('workspace_id, id, finding_id, author, text, created_at')
+          .eq('workspace_id', workspaceId)
+          .in('finding_id', findingIds)
+          .order('created_at', { ascending: true }),
+        supabase
+          .from('qa_screenshots')
+          .select('workspace_id, id, finding_id, name, data_url, created_at')
+          .eq('workspace_id', workspaceId)
+          .in('finding_id', findingIds)
+          .order('created_at', { ascending: true }),
+      ])
+    if (commentsError) {
+      if (isMissingQaTablesError(commentsError.message)) return null
+      throw commentsError
+    }
+    if (screenshotsError) {
+      if (isMissingQaTablesError(screenshotsError.message)) return null
+      throw screenshotsError
+    }
+    comments = (commentRows ?? []) as QaCommentRow[]
+    screenshots = (screenshotRows ?? []) as QaScreenshotRow[]
+  }
+
+  return mapQaRowsToState(sessions, findings, comments, screenshots)
+}
+
+async function persistQaStateToNormalizedTables(state: QaState): Promise<void> {
+  const workspaceId = getActiveWorkspaceId()
+  const sessionsPayload = state.sessions.map((s) => ({
+    workspace_id: workspaceId,
+    id: s.id,
+    name: s.name,
+    created_at: s.createdAt,
+  }))
+  const findingsPayload = state.sessions.flatMap((s) =>
+    s.findings.map((f) => ({
+      workspace_id: workspaceId,
+      id: f.id,
+      session_id: s.id,
+      title: f.title,
+      description: f.description,
+      tags: f.tags,
+      priority: f.priority,
+      status: f.status,
+      environment: f.environment,
+      categories: f.categories,
+      figma_link: f.figmaLink,
+      ticket_link: f.ticketLink,
+      assignee: f.assignee,
+      reporter: f.reporter,
+      created_at: f.createdAt,
+      updated_at: f.updatedAt,
+    })),
+  )
+  const commentsPayload = state.sessions.flatMap((s) =>
+    s.findings.flatMap((f) =>
+      f.comments.map((c) => ({
+        workspace_id: workspaceId,
+        id: c.id,
+        finding_id: f.id,
+        author: c.author,
+        text: c.text,
+        created_at: c.createdAt,
+      })),
+    ),
+  )
+  const screenshotsPayload = state.sessions.flatMap((s) =>
+    s.findings.flatMap((f) =>
+      f.screenshots.map((sh) => ({
+        workspace_id: workspaceId,
+        id: sh.id,
+        finding_id: f.id,
+        name: sh.name,
+        data_url: sh.dataUrl,
+        created_at: sh.createdAt,
+      })),
+    ),
+  )
+
+  // Full replace for deterministic persistence.
+  const { error: delCommentsError } = await supabase.from('qa_comments').delete().eq('workspace_id', workspaceId)
+  if (delCommentsError) {
+    if (isMissingQaTablesError(delCommentsError.message)) return
+    throw delCommentsError
+  }
+  const { error: delScreenshotsError } = await supabase
+    .from('qa_screenshots')
+    .delete()
+    .eq('workspace_id', workspaceId)
+  if (delScreenshotsError) throw delScreenshotsError
+  const { error: delFindingsError } = await supabase.from('qa_findings').delete().eq('workspace_id', workspaceId)
+  if (delFindingsError) throw delFindingsError
+  const { error: delSessionsError } = await supabase.from('qa_sessions').delete().eq('workspace_id', workspaceId)
+  if (delSessionsError) throw delSessionsError
+
+  if (sessionsPayload.length > 0) {
+    const { error } = await supabase.from('qa_sessions').insert(sessionsPayload)
+    if (error) throw error
+  }
+  if (findingsPayload.length > 0) {
+    const { error } = await supabase.from('qa_findings').insert(findingsPayload)
+    if (error) throw error
+  }
+  if (commentsPayload.length > 0) {
+    const { error } = await supabase.from('qa_comments').insert(commentsPayload)
+    if (error) throw error
+  }
+  if (screenshotsPayload.length > 0) {
+    const { error } = await supabase.from('qa_screenshots').insert(screenshotsPayload)
+    if (error) throw error
   }
 }
 

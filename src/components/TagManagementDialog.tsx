@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
-import { SHARED_WORKSPACE_USER_ID } from '@/lib/sharedWorkspace'
+import { getActiveWorkspaceId } from '@/lib/workspaces'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
@@ -44,6 +44,7 @@ type Props = {
 }
 
 export function TagManagementDialog({ open, onOpenChange, documentId, currentTags, onTagsUpdated }: Props) {
+  const workspaceId = getActiveWorkspaceId()
   const [allTags, setAllTags] = useState<TagItem[]>([])
   const [newTagName, setNewTagName] = useState('')
   const [newTagColor, setNewTagColor] = useState(PRESET_COLORS[9].value) // Blue default
@@ -62,7 +63,7 @@ export function TagManagementDialog({ open, onOpenChange, documentId, currentTag
     const { data, error } = await supabase
       .from('tags')
       .select('*')
-      .eq('user_id', SHARED_WORKSPACE_USER_ID)
+      .eq('user_id', workspaceId)
       .order('name')
     if (error) { toast.error(error.message); return }
     setAllTags(data || [])
@@ -75,7 +76,7 @@ export function TagManagementDialog({ open, onOpenChange, documentId, currentTag
       .insert({
         name: newTagName.trim(),
         color: newTagColor,
-        user_id: SHARED_WORKSPACE_USER_ID,
+        user_id: workspaceId,
       })
     if (error) { toast.error(error.message); return }
     setNewTagName('')

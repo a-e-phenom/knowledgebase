@@ -41,7 +41,7 @@ import {
   structuredCardsToMarkdown,
   suggestedMarkdownTitle,
 } from '@/lib/insertMarkdownDocument'
-import { SHARED_WORKSPACE_USER_ID } from '@/lib/sharedWorkspace'
+import { getActiveWorkspaceId } from '@/lib/workspaces'
 import { requestOpenAIChatCompletion } from '@/lib/openaiChat'
 import { filterDocumentsByKnowledge } from '@/lib/moduleKnowledge'
 import { StructuredSourcesTree } from '@/components/StructuredSourcesTree'
@@ -106,6 +106,7 @@ export function AiChat({
   assistantIcon,
   knowledge,
 }: AiChatProps) {
+  const workspaceId = getActiveWorkspaceId()
   const navigate = useNavigate()
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -245,7 +246,7 @@ export function AiChat({
 
   useEffect(() => {
     fetchDocuments()
-  }, [])
+  }, [workspaceId])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -256,12 +257,12 @@ export function AiChat({
       supabase
         .from('documents')
         .select('id, title, content, file_name, file_url, file_type, folder_id')
-        .eq('user_id', SHARED_WORKSPACE_USER_ID)
+        .eq('user_id', workspaceId)
         .order('updated_at', { ascending: false }),
       supabase
         .from('folders')
         .select('id, parent_id, name')
-        .eq('user_id', SHARED_WORKSPACE_USER_ID),
+        .eq('user_id', workspaceId),
     ])
     setDocuments(docRes.data || [])
     setFolders(folderRes.data || [])
@@ -387,7 +388,7 @@ export function AiChat({
         .from('documents')
         .select('title, content, file_url, file_type, file_name')
         .in('id', selectedSourceIds)
-        .eq('user_id', SHARED_WORKSPACE_USER_ID)
+        .eq('user_id', workspaceId)
 
       if (error || !refDocs?.length) {
         toast.error('Could not load selected documents')
@@ -447,7 +448,7 @@ export function AiChat({
           .from('documents')
           .select('title, content, file_url, file_type, file_name')
           .in('id', userMsg.attachedDocs.map((d) => d.id))
-          .eq('user_id', SHARED_WORKSPACE_USER_ID)
+          .eq('user_id', workspaceId)
         if (refDocs?.length) {
           contextBlock = await buildContextFromDocRows(refDocs, 'Referenced documents:')
         }

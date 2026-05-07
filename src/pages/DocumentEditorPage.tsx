@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
-import { SHARED_WORKSPACE_USER_ID } from '@/lib/sharedWorkspace'
+import { getActiveWorkspaceId } from '@/lib/workspaces'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { BlockEditor } from '@/components/BlockEditor'
@@ -25,6 +25,7 @@ type Tag = {
 }
 
 export function DocumentEditorPage() {
+  const workspaceId = getActiveWorkspaceId()
   const { id } = useParams<{ id: string }>()
   const [searchParams] = useSearchParams()
   const folderId = searchParams.get('folder')
@@ -67,7 +68,7 @@ export function DocumentEditorPage() {
         .from('documents')
         .select('*')
         .eq('id', id)
-        .eq('user_id', SHARED_WORKSPACE_USER_ID)
+        .eq('user_id', workspaceId)
         .limit(1)
 
       if (docError) throw docError
@@ -114,14 +115,14 @@ export function DocumentEditorPage() {
         const { error } = await supabase.from('documents')
           .update({ title: title.trim(), content: contentToSave })
           .eq('id', id)
-          .eq('user_id', SHARED_WORKSPACE_USER_ID)
+          .eq('user_id', workspaceId)
         if (error) throw error
         toast.success('Saved')
       } else {
         const insertPayload: Record<string, any> = {
           title: title.trim(),
           content: contentToSave,
-          user_id: SHARED_WORKSPACE_USER_ID,
+          user_id: workspaceId,
         }
         if (folderId) insertPayload.folder_id = folderId
         const { data: createdRows, error } = await supabase.from('documents')
@@ -138,7 +139,7 @@ export function DocumentEditorPage() {
     } finally {
       setSaving(false)
     }
-  }, [title, content, id, folderId, navigate])
+  }, [title, content, id, folderId, navigate, workspaceId])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

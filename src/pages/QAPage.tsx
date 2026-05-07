@@ -48,11 +48,10 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import {
-  loadQaState,
+  defaultQaState,
   saveQaState,
   fetchQaStateFromSupabase,
   persistQaStateToSupabase,
-  migrateQaLocalStorageToSupabaseOnce,
   newId,
   normalizeTag,
   compressImageFileToDataUrl,
@@ -533,7 +532,7 @@ export function QAPage() {
     return m?.[1] ? safeDecode(m[1]) : undefined
   }, [params.sessionId, location.pathname])
 
-  const [state, setState] = useState<QaState>(() => loadQaState())
+  const [state, setState] = useState<QaState>(() => defaultQaState())
   const [qaRemoteReady, setQaRemoteReady] = useState(false)
   const remoteSaveEnabledRef = useRef(true)
 
@@ -587,7 +586,6 @@ export function QAPage() {
     let cancelled = false
     void (async () => {
       try {
-        await migrateQaLocalStorageToSupabaseOnce()
         const s = await fetchQaStateFromSupabase()
         if (!cancelled) {
           setState(s)
@@ -597,7 +595,7 @@ export function QAPage() {
         const msg = e instanceof Error ? e.message : 'Unknown error'
         toast.error('Could not load QA from workspace', { description: msg })
         if (!cancelled) {
-          setState(loadQaState())
+          setState(defaultQaState())
           remoteSaveEnabledRef.current = false
         }
       } finally {
@@ -1919,7 +1917,7 @@ export function QAPage() {
         <AppHeader />
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-16 text-center">
           <p className="text-sm font-medium text-muted-foreground">Loading QA workspace…</p>
-          <p className="max-w-sm text-xs text-muted-foreground">Syncing with your shared Supabase workspace.</p>
+          <p className="max-w-sm text-xs text-muted-foreground">Syncing with database....</p>
         </div>
       </div>
     )

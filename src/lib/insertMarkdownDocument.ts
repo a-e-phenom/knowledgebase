@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase'
-import { SHARED_WORKSPACE_USER_ID } from '@/lib/sharedWorkspace'
+import { getActiveWorkspaceId } from '@/lib/workspaces'
 import { firstOrNull } from '@/lib/supabaseQuery'
 import { markdownToHtml } from '@/lib/markdown'
 
@@ -38,13 +38,14 @@ export async function insertMarkdownDocument(
   docTitle: string,
   markdownContent: string,
 ): Promise<{ id: string } | { error: string }> {
+  const workspaceId = getActiveWorkspaceId()
   const html = contentForEditor(markdownContent)
   const { data: rows, error } = await supabase
     .from('documents')
     .insert({
       title: docTitle.trim() || 'Untitled',
       content: html,
-      user_id: SHARED_WORKSPACE_USER_ID,
+      user_id: workspaceId,
     })
     .select('id')
   if (error) return { error: error.message }

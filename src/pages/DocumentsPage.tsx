@@ -32,7 +32,7 @@ import { BlockEditor } from '@/components/BlockEditor'
 import { TagManagementDialog } from '@/components/TagManagementDialog'
 import { AppHeader } from '@/components/AppHeader'
 import { DOCUMENTS_STORAGE_BUCKET } from '@/lib/storage'
-import { SHARED_WORKSPACE_USER_ID } from '@/lib/sharedWorkspace'
+import { getActiveWorkspaceId } from '@/lib/workspaces'
 import { storageObjectPathFromPublicUrl } from '@/lib/storagePath'
 import { UploadedFileViewer } from '@/components/UploadedFileViewer'
 import { ExplorerTruncatedLabel } from '@/components/ExplorerTruncatedLabel'
@@ -74,6 +74,7 @@ type Tag = {
 }
 
 export function DocumentsPage() {
+  const workspaceId = getActiveWorkspaceId()
   const [allDocuments, setAllDocuments] = useState<Document[]>([])
   const [allFolders, setAllFolders] = useState<FolderItem[]>([])
   const [documentTags, setDocumentTags] = useState<Record<string, Tag[]>>({})
@@ -111,8 +112,8 @@ export function DocumentsPage() {
   const fetchData = useCallback(async () => {
     try {
       const [folderRes, docRes] = await Promise.all([
-        supabase.from('folders').select('*').eq('user_id', SHARED_WORKSPACE_USER_ID).order('name'),
-        supabase.from('documents').select('*').eq('user_id', SHARED_WORKSPACE_USER_ID).order('title'),
+        supabase.from('folders').select('*').eq('user_id', workspaceId).order('name'),
+        supabase.from('documents').select('*').eq('user_id', workspaceId).order('title'),
       ])
 
       if (folderRes.error) throw folderRes.error
@@ -123,8 +124,8 @@ export function DocumentsPage() {
       setAllDocuments(docRes.data || [])
 
       // Auto-select first doc if none selected
-      if (!selectedDocId && docRes.data && docRes.data.length > 0) {
-        setSelectedDocId(docRes.data[0].id)
+      if (docRes.data && docRes.data.length > 0) {
+        setSelectedDocId((prev) => prev ?? docRes.data[0].id)
       }
 
       // Fetch tags (two queries — avoids PostgREST embed edge cases / PGRST116)
@@ -162,7 +163,7 @@ export function DocumentsPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [workspaceId])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -227,7 +228,7 @@ export function DocumentsPage() {
       const payload: Record<string, any> = {
         title: 'Untitled',
         content: '',
-        user_id: SHARED_WORKSPACE_USER_ID,
+        user_id: workspaceId,
       }
       if (folderId) payload.folder_id = folderId
       const { data: rows, error } = await supabase.from('documents').insert(payload).select()
@@ -297,7 +298,7 @@ export function DocumentsPage() {
     const { error } = await supabase.from('folders').insert({
       name: newFolderName.trim(),
       parent_id: newFolderParentId,
-      user_id: SHARED_WORKSPACE_USER_ID,
+      user_id: workspaceId,
     })
     if (error) { toast.error(error.message); return }
     toast.success('Folder created')
@@ -361,7 +362,7 @@ export function DocumentsPage() {
     if (!file) return
     const fileExt = file.name.includes('.') ? file.name.split('.').pop() : ''
     const safeExt = fileExt ? `.${fileExt}` : ''
-    const fileName = `${SHARED_WORKSPACE_USER_ID}/${Date.now()}${safeExt}`
+    const fileName = `${workspaceId}/${Date.now()}${safeExt}`
     const bucket = DOCUMENTS_STORAGE_BUCKET
     const { error: uploadError } = await supabase.storage.from(bucket).upload(fileName, file)
     if (uploadError) {
@@ -388,7 +389,7 @@ export function DocumentsPage() {
       file_type: file.type || 'application/octet-stream',
       file_name: file.name,
       folder_id: uploadFolderId,
-      user_id: SHARED_WORKSPACE_USER_ID,
+      user_id: workspaceId,
     }).select()
     if (dbError) { toast.error(dbError.message); return }
     const inserted = firstOrNull(insertedRows)
