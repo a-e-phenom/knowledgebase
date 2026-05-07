@@ -131,6 +131,20 @@ function formatNotionDateTime(iso: string) {
   }
 }
 
+function describeError(error: unknown, fallback: string): string {
+  if (error instanceof Error) return error.message || fallback
+  if (typeof error === 'string') return error || fallback
+  if (error && typeof error === 'object') {
+    const obj = error as Record<string, unknown>
+    const message = typeof obj.message === 'string' ? obj.message : ''
+    const details = typeof obj.details === 'string' ? obj.details : ''
+    const hint = typeof obj.hint === 'string' ? obj.hint : ''
+    const combined = [message, details, hint].filter(Boolean).join(' - ')
+    if (combined) return combined
+  }
+  return fallback
+}
+
 function NotionEmpty() {
   return <span className="text-sm text-muted-foreground/80">+ Add</span>
 }
@@ -581,6 +595,32 @@ export function QAPage() {
   const [filterTags, setFilterTags] = useState<string[]>([])
   const [filterEnvironments, setFilterEnvironments] = useState<QaEnvironment[]>([])
   const [filterCategories, setFilterCategories] = useState<QaCategory[]>([])
+  const persistQueueRef = useRef<Promise<void>>(Promise.resolve())
+
+  const enqueueQaPersist = useCallback(
+    (nextState: QaState) => {
+      if (!qaRemoteReady) return
+      if (!remoteSaveEnabledRef.current) {
+        saveQaState(nextState)
+        return
+      }
+
+      persistQueueRef.current = persistQueueRef.current
+        .catch(() => {
+          // Keep queue alive after a failed persist.
+        })
+        .then(async () => {
+          try {
+            await persistQaStateToSupabase(nextState)
+          } catch (err) {
+            const msg = describeError(err, 'Unknown error')
+            toast.error('QA sync failed', { description: msg })
+            saveQaState(nextState)
+          }
+        })
+    },
+    [qaRemoteReady],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -592,7 +632,7 @@ export function QAPage() {
           remoteSaveEnabledRef.current = true
         }
       } catch (e) {
-        const msg = e instanceof Error ? e.message : 'Unknown error'
+        const msg = describeError(e, 'Unknown error')
         toast.error('Could not load QA from workspace', { description: msg })
         if (!cancelled) {
           setState(defaultQaState())
@@ -610,18 +650,10 @@ export function QAPage() {
   useEffect(() => {
     if (!qaRemoteReady) return
     const t = window.setTimeout(() => {
-      if (remoteSaveEnabledRef.current) {
-        void persistQaStateToSupabase(state).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : 'Unknown error'
-          toast.error('QA sync failed', { description: msg })
-          saveQaState(state)
-        })
-      } else {
-        saveQaState(state)
-      }
+      enqueueQaPersist(state)
     }, 500)
     return () => window.clearTimeout(t)
-  }, [state, qaRemoteReady])
+  }, [state, qaRemoteReady, enqueueQaPersist])
 
   useEffect(() => {
     setFilterSearch('')
@@ -954,7 +986,7 @@ export function QAPage() {
           }
           setFindingScreenshots((prev) => [...prev, shot])
         } catch (e) {
-          const msg = e instanceof Error ? e.message : 'Could not add image'
+          const msg = describeError(e, 'Could not add image')
           toast.error(msg)
         }
       }
@@ -990,16 +1022,7 @@ export function QAPage() {
 
     const pushPersist = (next: QaState) => {
       queueMicrotask(() => {
-        if (!qaRemoteReady) return
-        if (remoteSaveEnabledRef.current) {
-          void persistQaStateToSupabase(next).catch((err: unknown) => {
-            const msg = err instanceof Error ? err.message : 'Unknown error'
-            toast.error('QA sync failed', { description: msg })
-            saveQaState(next)
-          })
-        } else {
-          saveQaState(next)
-        }
+        enqueueQaPersist(next)
       })
     }
 
@@ -1087,7 +1110,7 @@ export function QAPage() {
             break
           }
         } catch (e) {
-          const msg = e instanceof Error ? e.message : 'Could not add image'
+          const msg = describeError(e, 'Could not add image')
           toast.error(msg)
         }
       }

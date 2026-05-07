@@ -343,14 +343,63 @@ function isMissingQaTablesError(message: string): boolean {
   return /qa_sessions|qa_findings|qa_comments|qa_screenshots/i.test(message)
 }
 
+function compareIsoDescThenIdDesc(
+  a: { created_at: string; id: string },
+  b: { created_at: string; id: string },
+): number {
+  const byCreatedAt = b.created_at.localeCompare(a.created_at)
+  if (byCreatedAt !== 0) return byCreatedAt
+  return b.id.localeCompare(a.id)
+}
+
+function compareIsoAscThenIdAsc(
+  a: { created_at: string; id: string },
+  b: { created_at: string; id: string },
+): number {
+  const byCreatedAt = a.created_at.localeCompare(b.created_at)
+  if (byCreatedAt !== 0) return byCreatedAt
+  return a.id.localeCompare(b.id)
+}
+
+const MAX_SCREENSHOT_INSERT_PAYLOAD_CHARS = 2_000_000
+
+function chunkRowsByEstimatedJsonSize<T>(
+  rows: T[],
+  estimateSize: (row: T) => number,
+  maxChunkSize: number,
+): T[][] {
+  const chunks: T[][] = []
+  let current: T[] = []
+  let currentSize = 0
+
+  for (const row of rows) {
+    const rowSize = estimateSize(row)
+    if (current.length > 0 && currentSize + rowSize > maxChunkSize) {
+      chunks.push(current)
+      current = []
+      currentSize = 0
+    }
+    current.push(row)
+    currentSize += rowSize
+  }
+
+  if (current.length > 0) chunks.push(current)
+  return chunks
+}
+
 function mapQaRowsToState(
   sessions: QaSessionRow[],
   findings: QaFindingRow[],
   comments: QaCommentRow[],
   screenshots: QaScreenshotRow[],
 ): QaState {
+  const stableSessions = [...sessions].sort(compareIsoDescThenIdDesc)
+  const stableFindings = [...findings].sort(compareIsoDescThenIdDesc)
+  const stableComments = [...comments].sort(compareIsoAscThenIdAsc)
+  const stableScreenshots = [...screenshots].sort(compareIsoAscThenIdAsc)
+
   const commentsByFinding = new Map<string, QaComment[]>()
-  comments.forEach((c) => {
+  stableComments.forEach((c) => {
     const list = commentsByFinding.get(c.finding_id) ?? []
     list.push({
       id: c.id,
@@ -362,7 +411,7 @@ function mapQaRowsToState(
   })
 
   const screenshotsByFinding = new Map<string, QaScreenshot[]>()
-  screenshots.forEach((s) => {
+  stableScreenshots.forEach((s) => {
     const list = screenshotsByFinding.get(s.finding_id) ?? []
     list.push({
       id: s.id,
@@ -374,7 +423,7 @@ function mapQaRowsToState(
   })
 
   const findingsBySession = new Map<string, QaFinding[]>()
-  findings.forEach((f) => {
+  stableFindings.forEach((f) => {
     const list = findingsBySession.get(f.session_id) ?? []
     list.push({
       id: f.id,
@@ -398,7 +447,7 @@ function mapQaRowsToState(
   })
 
   return {
-    sessions: sessions.map((s) => ({
+    sessions: stableSessions.map((s) => ({
       id: s.id,
       name: s.name,
       createdAt: s.created_at,
@@ -552,8 +601,15 @@ async function persistQaStateToNormalizedTables(state: QaState): Promise<void> {
     if (error) throw error
   }
   if (screenshotsPayload.length > 0) {
-    const { error } = await supabase.from('qa_screenshots').insert(screenshotsPayload)
-    if (error) throw error
+    const screenshotChunks = chunkRowsByEstimatedJsonSize(
+      screenshotsPayload,
+      (row) => (row.data_url?.length ?? 0) + 256,
+      MAX_SCREENSHOT_INSERT_PAYLOAD_CHARS,
+    )
+    for (const chunk of screenshotChunks) {
+      const { error } = await supabase.from('qa_screenshots').insert(chunk)
+      if (error) throw error
+    }
   }
 }
 
