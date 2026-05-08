@@ -21,6 +21,13 @@ import {
   workspaceIdFromPath,
   type Workspace,
 } from '@/lib/workspaces'
+
+/** Passed to nested routes (QA, etc.) for workspace-prefixed links and correct data scope. */
+export type AppShellOutletContext = {
+  activeWorkspace: Workspace | null
+  /** False until URL + workspace list have been applied to `setActiveWorkspaceId` (avoids wrong-workspace fetch). */
+  workspaceRouteReady: boolean
+}
 import { ChevronDown, ChevronsLeft, ChevronsRight, FileText, LayoutGrid, Pencil, Plus, ShieldCheck, Sparkles, Trash2, Users2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -67,6 +74,7 @@ export function AppShell() {
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const [savingWorkspaceId, setSavingWorkspaceId] = useState<string | null>(null)
   const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null)
+  const [workspaceRouteReady, setWorkspaceRouteReady] = useState(false)
   const activeWorkspace = useMemo(
     () => workspaces.find((w) => w.id === activeWorkspaceId) ?? workspaces[0] ?? null,
     [workspaces, activeWorkspaceId],
@@ -76,6 +84,7 @@ export function AppShell() {
     [location.pathname, workspaces],
   )
   useEffect(() => {
+    setWorkspaceRouteReady(false)
     void (async () => {
       await ensureDefaultWorkspaceRow()
       const rows = await fetchWorkspaces()
@@ -88,6 +97,7 @@ export function AppShell() {
         setActiveWorkspaceId(initialId)
         setActiveWorkspaceIdState(initialId)
       }
+      setWorkspaceRouteReady(true)
     })()
   }, [location.pathname])
 
@@ -283,7 +293,7 @@ export function AppShell() {
       </aside>
 
       <main key={activeWorkspaceId} className="min-w-0 flex-1">
-        <Outlet />
+        <Outlet context={{ activeWorkspace, workspaceRouteReady } as AppShellOutletContext} />
       </main>
 
       <Dialog open={newWorkspaceOpen} onOpenChange={setNewWorkspaceOpen}>

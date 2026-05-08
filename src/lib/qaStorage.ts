@@ -4,11 +4,18 @@ import {
   upsertWorkspaceAppDataJson,
 } from '@/lib/workspaceAppData'
 import { supabase } from '@/lib/supabase'
-import { getActiveWorkspaceId } from '@/lib/workspaces'
+import { DEFAULT_WORKSPACE_ID, getActiveWorkspaceId } from '@/lib/workspaces'
 
 const STORAGE_KEY = 'docHub-qa-v2'
 
 const LEGACY_KEY = 'docHub-qa-v1'
+
+/** AE keeps legacy key; other workspaces are isolated in localStorage. */
+function scopedQaStorageKey(): string {
+  const id = getActiveWorkspaceId()
+  if (id === DEFAULT_WORKSPACE_ID) return STORAGE_KEY
+  return `${STORAGE_KEY}:${id}`
+}
 
 export type QaPriority = 'low' | 'medium' | 'high' | 'critical'
 
@@ -234,11 +241,13 @@ export function parseQaStatePayload(parsed: unknown): QaState | null {
 
 function readStoredState(): QaState | null {
   try {
-    let raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) {
+    const key = scopedQaStorageKey()
+    let raw = localStorage.getItem(key)
+    if (!raw && key === STORAGE_KEY) {
       raw = localStorage.getItem(LEGACY_KEY)
       if (!raw) return null
     }
+    if (!raw) return null
     return parseQaStatePayload(JSON.parse(raw) as unknown)
   } catch {
     return null
@@ -253,11 +262,14 @@ export function loadQaState(): QaState {
 
 export function saveQaState(state: QaState) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-    try {
-      localStorage.removeItem(LEGACY_KEY)
-    } catch {
-      /* ignore */
+    const key = scopedQaStorageKey()
+    localStorage.setItem(key, JSON.stringify(state))
+    if (key === STORAGE_KEY) {
+      try {
+        localStorage.removeItem(LEGACY_KEY)
+      } catch {
+        /* ignore */
+      }
     }
   } catch {
     /* ignore quota */
@@ -267,14 +279,120 @@ export function saveQaState(state: QaState) {
 /** Load QA state from Supabase (empty object if missing or invalid). */
 export async function fetchQaStateFromSupabase(): Promise<QaState> {
   const normalized = await fetchQaStateFromNormalizedTables()
-  if (normalized) return normalized
+  if (normalized && normalized.sessions.length > 0) {
+    return mergeCommentsAndScreenshotsFromWorkspaceBlob(normalized)
+  }
   const raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA)
-  return parseQaStatePayload(raw) ?? defaultQaState()
+  const blobState = parseQaStatePayload(raw) ?? defaultQaState()
+
+  // Recovery path: if normalized tables are empty but QA blob still has data,
+  // return blob data and opportunistically rehydrate normalized tables.
+  if (blobState.sessions.length > 0 && (!normalized || normalized.sessions.length === 0)) {
+    try {
+      await persistQaStateToNormalizedTables(blobState)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn('[qaStorage] normalized rehydrate failed:', message)
+    }
+    return blobState
+  }
+
+  // Last-resort recovery: browser backup for this workspace only (scoped key).
+  // Never read the AE legacy key when viewing another workspace — that caused AE items to appear in CRM.
+  const localBackup = readStoredState()
+  if (localBackup && localBackup.sessions.length > 0) {
+    try {
+      await persistQaStateToNormalizedTables(localBackup)
+      await upsertWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA, localBackup as unknown as Record<string, unknown>)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn('[qaStorage] local backup rehydrate failed:', message)
+    }
+    return localBackup
+  }
+
+  if (normalized) return normalized
+  return blobState
 }
 
 export async function persistQaStateToSupabase(state: QaState): Promise<void> {
-  await persistQaStateToNormalizedTables(state)
-  await upsertWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA, state as unknown as Record<string, unknown>)
+  const countMedia = (s: QaState): { comments: number; screenshots: number } => {
+    let comments = 0
+    let screenshots = 0
+    for (const session of s.sessions) {
+      for (const finding of session.findings) {
+        comments += finding.comments.length
+        screenshots += finding.screenshots.length
+      }
+    }
+    return { comments, screenshots }
+  }
+
+  const mergeMissingMediaFromBackup = (
+    target: QaState,
+    backup: QaState,
+    recoverComments: boolean,
+    recoverScreenshots: boolean,
+  ): QaState => {
+    if (!recoverComments && !recoverScreenshots) return target
+    const backupFindings = new Map<string, QaFinding>()
+    for (const session of backup.sessions) {
+      for (const finding of session.findings) {
+        backupFindings.set(finding.id, finding)
+      }
+    }
+    let changed = false
+    const sessions = target.sessions.map((session) => ({
+      ...session,
+      findings: session.findings.map((finding) => {
+        const backupFinding = backupFindings.get(finding.id)
+        if (!backupFinding) return finding
+
+        let comments = finding.comments
+        if (recoverComments && comments.length === 0 && backupFinding.comments.length > 0) {
+          comments = backupFinding.comments
+          changed = true
+        }
+
+        let screenshots = finding.screenshots
+        if (recoverScreenshots && screenshots.length === 0 && backupFinding.screenshots.length > 0) {
+          screenshots = backupFinding.screenshots
+          changed = true
+        }
+
+        if (comments === finding.comments && screenshots === finding.screenshots) return finding
+        return { ...finding, comments, screenshots }
+      }),
+    }))
+    return changed ? { sessions } : target
+  }
+
+  const baselineCandidates: QaState[] = []
+  try {
+    const normalized = await fetchQaStateFromNormalizedTables()
+    if (normalized) baselineCandidates.push(normalized)
+  } catch {
+    /* best effort guard */
+  }
+  try {
+    const raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA)
+    const blob = parseQaStatePayload(raw)
+    if (blob) baselineCandidates.push(blob)
+  } catch {
+    /* best effort guard */
+  }
+
+  let safeState = state
+  const nextCounts = countMedia(state)
+  for (const baseline of baselineCandidates) {
+    const baselineCounts = countMedia(baseline)
+    const recoverComments = baselineCounts.comments >= 3 && nextCounts.comments === 0
+    const recoverScreenshots = baselineCounts.screenshots >= 3 && nextCounts.screenshots === 0
+    safeState = mergeMissingMediaFromBackup(safeState, baseline, recoverComments, recoverScreenshots)
+  }
+
+  await persistQaStateToNormalizedTables(safeState)
+  await upsertWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA, safeState as unknown as Record<string, unknown>)
 }
 
 /**
@@ -288,8 +406,10 @@ export async function migrateQaLocalStorageToSupabaseOnce(): Promise<void> {
   if (!local || local.sessions.length === 0) return
   await persistQaStateToSupabase(local)
   try {
-    localStorage.removeItem(STORAGE_KEY)
-    localStorage.removeItem(LEGACY_KEY)
+    localStorage.removeItem(scopedQaStorageKey())
+    if (scopedQaStorageKey() === STORAGE_KEY) {
+      localStorage.removeItem(LEGACY_KEY)
+    }
   } catch {
     /* ignore */
   }
@@ -362,6 +482,18 @@ function compareIsoAscThenIdAsc(
 }
 
 const MAX_SCREENSHOT_INSERT_PAYLOAD_CHARS = 2_000_000
+
+/** PostgREST `.in()` with huge id lists can truncate requests or omit rows; keep batches small. */
+const FINDING_ID_IN_CHUNK = 80
+
+function chunkArray<T>(arr: T[], chunkSize: number): T[][] {
+  if (chunkSize <= 0) return [arr]
+  const out: T[][] = []
+  for (let i = 0; i < arr.length; i += chunkSize) {
+    out.push(arr.slice(i, i + chunkSize))
+  }
+  return out.length > 0 ? out : [[]]
+}
 
 function chunkRowsByEstimatedJsonSize<T>(
   rows: T[],
@@ -456,6 +588,66 @@ function mapQaRowsToState(
   }
 }
 
+const MAX_COMMENT_INSERT_PAYLOAD_CHARS = 1_500_000
+
+/** If normalized `qa_comments` / `qa_screenshots` rows are missing or incomplete, fill from last good `workspace_app_data` blob. */
+async function mergeCommentsAndScreenshotsFromWorkspaceBlob(state: QaState): Promise<QaState> {
+  let raw: unknown
+  try {
+    raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA)
+  } catch {
+    return state
+  }
+  const blob = parseQaStatePayload(raw)
+  if (!blob?.sessions?.length) return state
+
+  const blobFindings = new Map<string, QaFinding>()
+  for (const s of blob.sessions) {
+    for (const f of s.findings) {
+      blobFindings.set(f.id, f)
+    }
+  }
+
+  let changed = false
+  const sessions = state.sessions.map((s) => ({
+    ...s,
+    findings: s.findings.map((f) => {
+      const blobF = blobFindings.get(f.id)
+      if (!blobF) return f
+
+      const commentMap = new Map<string, QaComment>()
+      for (const c of f.comments) {
+        if (c?.id) commentMap.set(c.id, c)
+      }
+      for (const c of blobF.comments ?? []) {
+        if (c?.id && !commentMap.has(c.id)) commentMap.set(c.id, c)
+      }
+      const comments = Array.from(commentMap.values()).sort(
+        (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+      )
+
+      const shotMap = new Map<string, QaScreenshot>()
+      for (const sh of f.screenshots) {
+        if (sh?.id && sh?.dataUrl?.startsWith('data:image/')) shotMap.set(sh.id, sh)
+      }
+      for (const sh of blobF.screenshots ?? []) {
+        if (!sh?.dataUrl?.startsWith('data:image/')) continue
+        if (!shotMap.has(sh.id)) shotMap.set(sh.id, sh)
+      }
+      const screenshots = Array.from(shotMap.values()).sort(
+        (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+      )
+
+      if (comments.length === f.comments.length && screenshots.length === f.screenshots.length) {
+        return f
+      }
+      changed = true
+      return { ...f, comments, screenshots }
+    }),
+  }))
+  return changed ? { sessions } : state
+}
+
 async function fetchQaStateFromNormalizedTables(): Promise<QaState | null> {
   const workspaceId = getActiveWorkspaceId()
   const { data: sessionRows, error: sessionsError } = await supabase
@@ -489,31 +681,34 @@ async function fetchQaStateFromNormalizedTables(): Promise<QaState | null> {
   let comments: QaCommentRow[] = []
   let screenshots: QaScreenshotRow[] = []
   if (findingIds.length > 0) {
-    const [{ data: commentRows, error: commentsError }, { data: screenshotRows, error: screenshotsError }] =
-      await Promise.all([
-        supabase
-          .from('qa_comments')
-          .select('workspace_id, id, finding_id, author, text, created_at')
-          .eq('workspace_id', workspaceId)
-          .in('finding_id', findingIds)
-          .order('created_at', { ascending: true }),
-        supabase
-          .from('qa_screenshots')
-          .select('workspace_id, id, finding_id, name, data_url, created_at')
-          .eq('workspace_id', workspaceId)
-          .in('finding_id', findingIds)
-          .order('created_at', { ascending: true }),
-      ])
-    if (commentsError) {
-      if (isMissingQaTablesError(commentsError.message)) return null
-      throw commentsError
+    for (const idChunk of chunkArray(findingIds, FINDING_ID_IN_CHUNK)) {
+      if (idChunk.length === 0) continue
+      const [{ data: commentRows, error: commentsError }, { data: screenshotRows, error: screenshotsError }] =
+        await Promise.all([
+          supabase
+            .from('qa_comments')
+            .select('workspace_id, id, finding_id, author, text, created_at')
+            .eq('workspace_id', workspaceId)
+            .in('finding_id', idChunk)
+            .order('created_at', { ascending: true }),
+          supabase
+            .from('qa_screenshots')
+            .select('workspace_id, id, finding_id, name, data_url, created_at')
+            .eq('workspace_id', workspaceId)
+            .in('finding_id', idChunk)
+            .order('created_at', { ascending: true }),
+        ])
+      if (commentsError) {
+        if (isMissingQaTablesError(commentsError.message)) return null
+        throw commentsError
+      }
+      if (screenshotsError) {
+        if (isMissingQaTablesError(screenshotsError.message)) return null
+        throw screenshotsError
+      }
+      comments.push(...((commentRows ?? []) as QaCommentRow[]))
+      screenshots.push(...((screenshotRows ?? []) as QaScreenshotRow[]))
     }
-    if (screenshotsError) {
-      if (isMissingQaTablesError(screenshotsError.message)) return null
-      throw screenshotsError
-    }
-    comments = (commentRows ?? []) as QaCommentRow[]
-    screenshots = (screenshotRows ?? []) as QaScreenshotRow[]
   }
 
   return mapQaRowsToState(sessions, findings, comments, screenshots)
@@ -597,8 +792,23 @@ async function persistQaStateToNormalizedTables(state: QaState): Promise<void> {
     if (error) throw error
   }
   if (commentsPayload.length > 0) {
-    const { error } = await supabase.from('qa_comments').insert(commentsPayload)
-    if (error) throw error
+    const commentChunks = chunkRowsByEstimatedJsonSize(
+      commentsPayload,
+      (row) => (row.text?.length ?? 0) + (row.author?.length ?? 0) + 256,
+      MAX_COMMENT_INSERT_PAYLOAD_CHARS,
+    )
+    for (const chunk of commentChunks) {
+      const { error } = await supabase.from('qa_comments').insert(chunk)
+      if (error) throw error
+    }
+    const { count, error: countError } = await supabase
+      .from('qa_comments')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId)
+    if (countError) throw countError
+    if ((count ?? 0) !== commentsPayload.length) {
+      throw new Error(`QA comment save incomplete: stored ${count ?? 0} of ${commentsPayload.length}`)
+    }
   }
   if (screenshotsPayload.length > 0) {
     const screenshotChunks = chunkRowsByEstimatedJsonSize(
@@ -609,6 +819,14 @@ async function persistQaStateToNormalizedTables(state: QaState): Promise<void> {
     for (const chunk of screenshotChunks) {
       const { error } = await supabase.from('qa_screenshots').insert(chunk)
       if (error) throw error
+    }
+    const { count, error: countError } = await supabase
+      .from('qa_screenshots')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId)
+    if (countError) throw countError
+    if ((count ?? 0) !== screenshotsPayload.length) {
+      throw new Error(`QA screenshot save incomplete: stored ${count ?? 0} of ${screenshotsPayload.length}`)
     }
   }
 }

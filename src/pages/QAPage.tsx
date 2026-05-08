@@ -7,7 +7,7 @@ import {
   type ComponentType,
   type ReactNode,
 } from 'react'
-import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, Navigate, useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import { AppHeader } from '@/components/AppHeader'
 import { BlockEditor } from '@/components/BlockEditor'
 import { Badge, badgeVariants } from '@/components/ui/badge'
@@ -73,6 +73,8 @@ import {
   type QaStatus,
 } from '@/lib/qaStorage'
 import { CategoryRow } from '@/lib/qaCategoryUi'
+import type { AppShellOutletContext } from '@/components/AppShell'
+import { pathForWorkspace } from '@/lib/workspaces'
 import {
   ArrowLeft,
   Calendar,
@@ -530,8 +532,15 @@ export function QAPage() {
   const params = useParams<{ sessionId?: string }>()
   const location = useLocation()
   const navigate = useNavigate()
+  const { activeWorkspace, workspaceRouteReady } = useOutletContext<AppShellOutletContext>()
 
-  /** Prefer params; also parse pathname so `/qa/:id` works even if param typing/matching glitches. */
+  const qaListPath = useMemo(() => pathForWorkspace('/qa', activeWorkspace), [activeWorkspace])
+  const qaSessionPath = useCallback(
+    (sessionId: string) => pathForWorkspace(`/qa/${sessionId}`, activeWorkspace),
+    [activeWorkspace],
+  )
+
+  /** Prefer params; also parse pathname so `/qa/:id` and `/<slug>/qa/:id` work. */
   const sessionIdParam = useMemo(() => {
     const safeDecode = (s: string) => {
       try {
@@ -542,7 +551,7 @@ export function QAPage() {
     }
     const fromParams = params.sessionId?.trim()
     if (fromParams) return safeDecode(fromParams)
-    const m = /^\/qa\/([^/]+)\/?$/.exec(location.pathname)
+    const m = /\/qa\/([^/]+)\/?$/.exec(location.pathname)
     return m?.[1] ? safeDecode(m[1]) : undefined
   }, [params.sessionId, location.pathname])
 
@@ -595,6 +604,7 @@ export function QAPage() {
   const [filterTags, setFilterTags] = useState<string[]>([])
   const [filterEnvironments, setFilterEnvironments] = useState<QaEnvironment[]>([])
   const [filterCategories, setFilterCategories] = useState<QaCategory[]>([])
+  const skipNextAutosaveRef = useRef(true)
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve())
 
   const enqueueQaPersist = useCallback(
@@ -623,6 +633,12 @@ export function QAPage() {
   )
 
   useEffect(() => {
+    if (!workspaceRouteReady) {
+      setQaRemoteReady(false)
+      setState(defaultQaState())
+      return
+    }
+    skipNextAutosaveRef.current = true
     let cancelled = false
     void (async () => {
       try {
@@ -645,10 +661,14 @@ export function QAPage() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [workspaceRouteReady])
 
   useEffect(() => {
     if (!qaRemoteReady) return
+    if (skipNextAutosaveRef.current) {
+      skipNextAutosaveRef.current = false
+      return
+    }
     const t = window.setTimeout(() => {
       enqueueQaPersist(state)
     }, 500)
@@ -931,7 +951,7 @@ export function QAPage() {
     setState((prev) => ({ ...prev, sessions: [session, ...prev.sessions] }))
     setSessionDialogOpen(false)
     toast.success('QA page started')
-    navigate(`/qa/${id}`)
+    navigate(qaSessionPath(id))
   }
 
   const renameSession = () => {
@@ -959,7 +979,7 @@ export function QAPage() {
     setSessionToDelete(null)
     toast.success('QA page removed')
     if (sessionIdParam === deletedId) {
-      navigate('/qa', { replace: true })
+      navigate(qaListPath, { replace: true })
     }
   }
 
@@ -1948,14 +1968,14 @@ export function QAPage() {
 
   if (sessionIdParam) {
     if (!activeSession) {
-      return <Navigate to="/qa" replace />
+      return <Navigate to={qaListPath} replace />
     }
 
     return (
       <div className="flex h-[100dvh] min-h-0 flex-col bg-background">
         <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-background px-4 sm:px-5">
           <Button type="button" variant="ghost" size="sm" className="gap-1.5 px-2" asChild>
-            <Link to="/qa">
+            <Link to={qaListPath}>
               <ArrowLeft className="h-4 w-4" />
             </Link>
           </Button>
@@ -2603,7 +2623,7 @@ export function QAPage() {
                   <Card className="h-full transition-shadow hover:shadow-md">
                     <CardHeader className="pb-2">
                       <div className="flex items-start justify-between gap-2">
-                        <Link to={`/qa/${s.id}`} className="min-w-0 flex-1">
+                        <Link to={qaSessionPath(s.id)} className="min-w-0 flex-1">
                           <CardTitle className="line-clamp-2 text-base leading-snug hover:underline">
                             {s.name}
                           </CardTitle>
@@ -2626,7 +2646,7 @@ export function QAPage() {
                     </CardHeader>
                     <CardContent className="pt-0">
                       <Button variant="secondary" size="sm" className="w-full" asChild>
-                        <Link to={`/qa/${s.id}`}>Open</Link>
+                        <Link to={qaSessionPath(s.id)}>Open</Link>
                       </Button>
                     </CardContent>
                   </Card>
