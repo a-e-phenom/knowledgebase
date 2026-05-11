@@ -12,9 +12,14 @@ function scopedStorageKey(): string {
   return workspaceId === DEFAULT_WORKSPACE_ID ? STORAGE_KEY : `${STORAGE_KEY}:${workspaceId}`
 }
 
+export const PRODUCT_TEAMS = ['Product', 'UX', 'Engineering'] as const
+export type ProductTeam = (typeof PRODUCT_TEAMS)[number]
+
 export type ProductMember = {
   id: string
   name: string
+  /** Discipline / squad for standups and roster */
+  team: ProductTeam
 }
 
 export type StandupSubmission = {
@@ -37,16 +42,27 @@ export function defaultProductStandupState(): ProductStandupState {
   return { members: [], submissions: [] }
 }
 
+function parseProductTeam(value: unknown): ProductTeam {
+  if (value === 'Product' || value === 'UX' || value === 'Engineering') return value
+  return 'Product'
+}
+
 export function parseProductStandupPayload(parsed: unknown): ProductStandupState | null {
   if (!parsed || typeof parsed !== 'object') return null
   const o = parsed as Record<string, unknown>
   const members = Array.isArray(o.members) ? o.members : []
   const submissions = Array.isArray(o.submissions) ? o.submissions : []
   return {
-    members: members.filter(
-      (m): m is ProductMember =>
-        !!m && typeof m === 'object' && typeof (m as ProductMember).id === 'string' && typeof (m as ProductMember).name === 'string',
-    ),
+    members: members
+      .filter(
+        (m): m is Record<string, unknown> =>
+          !!m && typeof m === 'object' && typeof (m as ProductMember).id === 'string' && typeof (m as ProductMember).name === 'string',
+      )
+      .map((m) => ({
+        id: m.id as string,
+        name: m.name as string,
+        team: parseProductTeam(m.team),
+      })),
     submissions: submissions
       .filter(
         (s): s is Record<string, unknown> =>
@@ -96,8 +112,14 @@ export function saveProductStandupState(state: ProductStandupState) {
 }
 
 export async function fetchProductStandupFromSupabase(): Promise<ProductStandupState> {
-  const raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_PRODUCT_STANDUP)
-  return parseProductStandupPayload(raw) ?? defaultProductStandupState()
+  try {
+    const raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_PRODUCT_STANDUP)
+    const parsed = parseProductStandupPayload(raw)
+    if (parsed) return parsed
+  } catch {
+    /* network / RLS / missing table — fall back to browser cache */
+  }
+  return readProductStandupFromLocalStorage() ?? defaultProductStandupState()
 }
 
 export async function persistProductStandupToSupabase(state: ProductStandupState): Promise<void> {

@@ -282,7 +282,13 @@ export async function fetchQaStateFromSupabase(): Promise<QaState> {
   if (normalized && normalized.sessions.length > 0) {
     return mergeCommentsAndScreenshotsFromWorkspaceBlob(normalized)
   }
-  const raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA)
+  let raw: unknown | null = null
+  try {
+    raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.warn('[qaStorage] workspace_app_data fetch failed:', message)
+  }
   const blobState = parseQaStatePayload(raw) ?? defaultQaState()
 
   // Recovery path: if normalized tables are empty but QA blob still has data,

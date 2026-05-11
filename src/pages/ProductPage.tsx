@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { AppHeader } from '@/components/AppHeader'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type CSSProperties,
+} from 'react'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -22,16 +30,30 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Calendar, CalendarDayButton } from '@/components/ui/calendar'
+import { cn } from '@/lib/utils'
+import {
   defaultProductStandupState,
+  loadProductStandupState,
   saveProductStandupState,
   fetchProductStandupFromSupabase,
   persistProductStandupToSupabase,
   dateKeyFromDate,
   parseDateKey,
+  PRODUCT_TEAMS,
   type ProductMember,
   type ProductStandupState,
+  type ProductTeam,
 } from '@/lib/productStandupStorage'
-import { Check, ChevronLeft, ChevronRight, Plus, Search, Send } from 'lucide-react'
+
+const STANDUP_SAVE_DEBOUNCE_MS = 200
+import { Check, ChevronLeft, ChevronRight, MoreVertical, Pencil, Plus, Search, Send, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 function initials(name: string) {
@@ -41,13 +63,62 @@ function initials(name: string) {
   return (p[0][0] + p[p.length - 1][0]).toUpperCase()
 }
 
-function avatarStyle(memberId: string): CSSProperties {
-  const hues = [262, 200, 330, 145, 25, 170, 310, 220]
-  let h = 0
-  for (let i = 0; i < memberId.length; i++) h += memberId.charCodeAt(i)
-  const hue = hues[h % hues.length]
+/**
+ * Distinct, modern fills (indigo / sky / teal / rose, etc.) — tuned for white initials.
+ * While roster length ≤ this list, each member gets a unique color (by name order).
+ * Beyond that, colors cycle with minimal palette size.
+ */
+const MODERN_AVATAR_BACKGROUNDS = [
+  '#6366f1',
+  '#0ea5e9',
+  '#14b8a6',
+  '#22c55e',
+  '#a855f7',
+  '#ec4899',
+  '#f97316',
+  '#3b82f6',
+  '#8b5cf6',
+  '#06b6d4',
+  '#d946ef',
+  '#ef4444',
+  '#10b981',
+  '#f43f5e',
+  '#7c3aed',
+  '#0891b2',
+  '#4f46e5',
+  '#0d9488',
+  '#db2777',
+  '#ea580c',
+] as const
+
+function sortedMemberIdsByDisplayName(members: ProductMember[]): string[] {
+  return [...members]
+    .sort((a, b) => {
+      const byName = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      if (byName !== 0) return byName
+      return a.id.localeCompare(b.id)
+    })
+    .map((m) => m.id)
+}
+
+function avatarBackgroundColor(memberId: string, sortedMemberIds: string[]): string {
+  const idx = sortedMemberIds.indexOf(memberId)
+  const palette = MODERN_AVATAR_BACKGROUNDS
+  const n = sortedMemberIds.length
+  let colorIndex: number
+  if (idx >= 0) {
+    colorIndex = n <= palette.length ? idx : idx % palette.length
+  } else {
+    let h = 0
+    for (let i = 0; i < memberId.length; i++) h += memberId.charCodeAt(i)
+    colorIndex = h % palette.length
+  }
+  return palette[colorIndex] ?? palette[0]
+}
+
+function avatarStyle(memberId: string, sortedMemberIds: string[]): CSSProperties {
   return {
-    backgroundColor: `hsl(${hue} 45% 46%)`,
+    backgroundColor: avatarBackgroundColor(memberId, sortedMemberIds),
     color: '#fff',
   }
 }
@@ -81,18 +152,142 @@ function formatSubmissionTime(iso: string) {
   }
 }
 
+function createStandupCalendarDayButton(
+  submissionMemberIdsByDateKey: Map<string, string[]>,
+  sortedMemberIdsForAvatars: string[],
+  memberById: Map<string, ProductMember>,
+) {
+  return function StandupCalendarDayButton(props: ComponentProps<typeof CalendarDayButton>) {
+    const { className, children, day, modifiers, ...rest } = props
+    const dateKey = dateKeyFromDate(day.date)
+    const memberIds = submissionMemberIdsByDateKey.get(dateKey) ?? []
+    return (
+      <CalendarDayButton
+        day={day}
+        modifiers={modifiers}
+        {...rest}
+        className={cn(className, memberIds.length > 0 && 'pb-px')}
+      >
+        {children}
+        {memberIds.length > 0 ? (
+          <span
+            className="pointer-events-none flex w-full max-w-[calc(var(--cell-size)-6px)] flex-wrap content-center justify-center gap-px px-0.5"
+            aria-hidden
+          >
+            {memberIds.map((id) => (
+              <span
+                key={id}
+                title={memberById.get(id)?.name ?? 'Former teammate'}
+                className="size-1 shrink-0 rounded-full ring-1 ring-background/90 dark:ring-foreground/20"
+                style={{ backgroundColor: avatarBackgroundColor(id, sortedMemberIdsForAvatars) }}
+              />
+            ))}
+          </span>
+        ) : null}
+      </CalendarDayButton>
+    )
+  }
+}
+
+function TeamMemberRow({
+  member,
+  submitted,
+  sortedMemberIdsForAvatars,
+  onEdit,
+  onDelete,
+}: {
+  member: ProductMember
+  submitted: boolean
+  sortedMemberIdsForAvatars: string[]
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  const teamCaps = member.team.toUpperCase()
+
+  return (
+    <li className="flex items-start gap-2 rounded-md py-1.5 pr-0.5 text-sm">
+      <span
+        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-semibold"
+        style={avatarStyle(member.id, sortedMemberIdsForAvatars)}
+      >
+        {initials(member.name)}
+      </span>
+      <div className="min-w-0 flex-1 pt-0.5" title={member.name}>
+        <p
+          className={`truncate leading-tight ${submitted ? 'font-medium text-foreground' : 'text-muted-foreground'}`}
+        >
+          {member.name}
+        </p>
+        <p className="mt-0.5 text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground">{teamCaps}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5 self-center">
+        {submitted ? (
+          <Check className="h-4 w-4 shrink-0 text-primary" aria-hidden />
+        ) : (
+          <span className="inline-block w-4 shrink-0" aria-hidden />
+        )}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+              aria-label={`Actions for ${member.name}`}
+            >
+              <MoreVertical className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuItem
+              onClick={() => {
+                onEdit()
+              }}
+            >
+              <Pencil className="h-4 w-4" />
+              Edit
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={() => {
+                onDelete()
+              }}
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </li>
+  )
+}
+
 export function ProductPage() {
   const [state, setState] = useState<ProductStandupState>(() => defaultProductStandupState())
   const [standupRemoteReady, setStandupRemoteReady] = useState(false)
   const remoteSaveEnabledRef = useRef(true)
+  const stateRef = useRef<ProductStandupState>(state)
+  const standupRemoteReadyRef = useRef(false)
   const [selectedDayKey, setSelectedDayKey] = useState(() => dateKeyFromDate(new Date()))
   const [search, setSearch] = useState('')
-  const [newMemberName, setNewMemberName] = useState('')
+  const [memberAddOpen, setMemberAddOpen] = useState(false)
+  const [memberAddName, setMemberAddName] = useState('')
+  const [memberAddTeam, setMemberAddTeam] = useState<ProductTeam>('Product')
   const [modalOpen, setModalOpen] = useState(false)
   const [formMemberId, setFormMemberId] = useState('')
   const [formYesterday, setFormYesterday] = useState('')
   const [formToday, setFormToday] = useState('')
   const [formBlockers, setFormBlockers] = useState('')
+  const [memberEditOpen, setMemberEditOpen] = useState(false)
+  const [memberEditId, setMemberEditId] = useState<string | null>(null)
+  const [memberEditName, setMemberEditName] = useState('')
+  const [memberEditTeam, setMemberEditTeam] = useState<ProductTeam>('Product')
+  const [datePickerOpen, setDatePickerOpen] = useState(false)
+  const [calendarMonth, setCalendarMonth] = useState(() => parseDateKey(dateKeyFromDate(new Date())))
+
+  stateRef.current = state
+  standupRemoteReadyRef.current = standupRemoteReady
 
   useEffect(() => {
     let cancelled = false
@@ -101,13 +296,19 @@ export function ProductPage() {
         const s = await fetchProductStandupFromSupabase()
         if (!cancelled) {
           setState(s)
+          saveProductStandupState(s)
           remoteSaveEnabledRef.current = true
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Unknown error'
         toast.error('Could not load Product standup', { description: msg })
         if (!cancelled) {
-          setState(defaultProductStandupState())
+          const local = loadProductStandupState()
+          if (local.members.length > 0 || local.submissions.length > 0) {
+            setState(local)
+          } else {
+            setState(defaultProductStandupState())
+          }
           remoteSaveEnabledRef.current = false
         }
       } finally {
@@ -122,24 +323,96 @@ export function ProductPage() {
   useEffect(() => {
     if (!standupRemoteReady) return
     const t = window.setTimeout(() => {
+      const snap = stateRef.current
       if (remoteSaveEnabledRef.current) {
-        void persistProductStandupToSupabase(state).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : 'Unknown error'
-          toast.error('Standup sync failed', { description: msg })
-          saveProductStandupState(state)
-        })
+        void persistProductStandupToSupabase(snap)
+          .then(() => {
+            saveProductStandupState(snap)
+          })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : 'Unknown error'
+            toast.error('Standup sync failed', { description: msg })
+            saveProductStandupState(snap)
+          })
       } else {
-        saveProductStandupState(state)
+        saveProductStandupState(snap)
       }
-    }, 500)
+    }, STANDUP_SAVE_DEBOUNCE_MS)
     return () => window.clearTimeout(t)
   }, [state, standupRemoteReady])
+
+  /** Flush latest standup when leaving the page so a pending debounce cannot drop edits. */
+  useEffect(() => {
+    return () => {
+      if (!standupRemoteReadyRef.current) return
+      const snap = stateRef.current
+      if (remoteSaveEnabledRef.current) {
+        void persistProductStandupToSupabase(snap)
+          .then(() => saveProductStandupState(snap))
+          .catch(() => saveProductStandupState(snap))
+      } else {
+        saveProductStandupState(snap)
+      }
+    }
+  }, [])
+
+  /** Sync backup when the tab is hidden or closed (async Supabase may not finish in time). */
+  useEffect(() => {
+    const onPageHide = () => {
+      if (!standupRemoteReadyRef.current) return
+      saveProductStandupState(stateRef.current)
+    }
+    window.addEventListener('pagehide', onPageHide)
+    return () => window.removeEventListener('pagehide', onPageHide)
+  }, [])
+
+  useEffect(() => {
+    if (datePickerOpen) setCalendarMonth(parseDateKey(selectedDayKey))
+  }, [datePickerOpen, selectedDayKey])
 
   const memberById = useMemo(() => {
     const m = new Map<string, ProductMember>()
     state.members.forEach((x) => m.set(x.id, x))
     return m
   }, [state.members])
+
+  const sortedMemberIdsForAvatars = useMemo(
+    () => sortedMemberIdsByDisplayName(state.members),
+    [state.members],
+  )
+
+  /** dateKey → unique submitter ids, ordered like the roster (then unknown ids). */
+  const submissionMemberIdsByDateKey = useMemo(() => {
+    const byDay = new Map<string, Set<string>>()
+    for (const s of state.submissions) {
+      let set = byDay.get(s.dateKey)
+      if (!set) {
+        set = new Set()
+        byDay.set(s.dateKey, set)
+      }
+      set.add(s.memberId)
+    }
+    const ordered = new Map<string, string[]>()
+    for (const [dateKey, idSet] of byDay) {
+      const rosterOrder = sortedMemberIdsForAvatars.filter((id) => idSet.has(id))
+      const unknown = [...idSet].filter((id) => !sortedMemberIdsForAvatars.includes(id)).sort()
+      ordered.set(dateKey, [...rosterOrder, ...unknown])
+    }
+    return ordered
+  }, [state.submissions, sortedMemberIdsForAvatars])
+
+  const standupCalendarComponents = useMemo(
+    () => ({
+      DayButton: createStandupCalendarDayButton(
+        submissionMemberIdsByDateKey,
+        sortedMemberIdsForAvatars,
+        memberById,
+      ),
+    }),
+    [submissionMemberIdsByDateKey, sortedMemberIdsForAvatars, memberById],
+  )
+
+  const selectedCalendarDate = useMemo(() => parseDateKey(selectedDayKey), [selectedDayKey])
 
   const submissionsForDay = useMemo(
     () => state.submissions.filter((s) => s.dateKey === selectedDayKey),
@@ -176,8 +449,14 @@ export function ProductPage() {
     return list
   }, [submissionsForDay, search, memberById])
 
-  const addMember = useCallback(() => {
-    const name = newMemberName.trim()
+  const openMemberAdd = useCallback(() => {
+    setMemberAddName('')
+    setMemberAddTeam('Product')
+    setMemberAddOpen(true)
+  }, [])
+
+  const saveMemberAdd = useCallback(() => {
+    const name = memberAddName.trim()
     if (!name) {
       toast.error('Enter a name')
       return
@@ -188,11 +467,47 @@ export function ProductPage() {
         : `m-${Date.now()}`
     setState((prev) => ({
       ...prev,
-      members: [...prev.members, { id, name }],
+      members: [...prev.members, { id, name, team: memberAddTeam }],
     }))
-    setNewMemberName('')
+    setMemberAddOpen(false)
+    setMemberAddName('')
     toast.success('Member added')
-  }, [newMemberName])
+  }, [memberAddName, memberAddTeam])
+
+  const openMemberEdit = useCallback((m: ProductMember) => {
+    setMemberEditId(m.id)
+    setMemberEditName(m.name)
+    setMemberEditTeam(m.team)
+    setMemberEditOpen(true)
+  }, [])
+
+  const saveMemberEdit = useCallback(() => {
+    const name = memberEditName.trim()
+    if (!name) {
+      toast.error('Enter a name')
+      return
+    }
+    if (!memberEditId) return
+    setState((prev) => ({
+      ...prev,
+      members: prev.members.map((m) =>
+        m.id === memberEditId ? { ...m, name, team: memberEditTeam } : m,
+      ),
+    }))
+    setMemberEditOpen(false)
+    setMemberEditId(null)
+    toast.success('Member updated')
+  }, [memberEditId, memberEditName, memberEditTeam])
+
+  const removeMember = useCallback((memberId: string) => {
+    setState((prev) => ({
+      ...prev,
+      members: prev.members.filter((m) => m.id !== memberId),
+      submissions: prev.submissions.filter((s) => s.memberId !== memberId),
+    }))
+    setFormMemberId((id) => (id === memberId ? '' : id))
+    toast.success('Member removed')
+  }, [])
 
   const shiftDay = (delta: number) => {
     const d = parseDateKey(selectedDayKey)
@@ -247,7 +562,6 @@ export function ProductPage() {
   if (!standupRemoteReady) {
     return (
       <div className="flex min-h-screen flex-col bg-background">
-        <AppHeader />
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-16 text-center">
           <p className="text-sm font-medium text-muted-foreground">Loading Product standup…</p>
           <p className="max-w-sm text-xs text-muted-foreground">Syncing with database....</p>
@@ -258,21 +572,42 @@ export function ProductPage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <AppHeader />
-
       <div className="flex min-h-0 flex-1 flex-col border-b bg-muted/15">
         <div className="flex flex-wrap items-center gap-3 border-b bg-background px-4 py-3 sm:px-6">
           <div className="min-w-0 flex-1">
-            <h1 className="text-lg font-semibold tracking-tight">Product</h1>
-            <p className="text-xs text-muted-foreground">Async standups · synced with your workspace (Supabase)</p>
+            <h1 className="text-lg font-semibold tracking-tight">Team updates</h1>
+            <p className="text-xs text-muted-foreground">Async standups</p>
           </div>
           <div className="flex items-center gap-1 rounded-lg border bg-background px-1 py-0.5 shadow-sm">
             <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => shiftDay(-1)}>
               <ChevronLeft className="h-4 w-4" />
             </Button>
-            <span className="min-w-[10rem] px-2 text-center text-sm font-medium tabular-nums">
-              {formatDayHeading(selectedDayKey)}
-            </span>
+            <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="min-w-[10rem] shrink-0 rounded-md px-2 py-1 text-center text-sm font-medium tabular-nums text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                  aria-label="Open calendar"
+                >
+                  {formatDayHeading(selectedDayKey)}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="center" sideOffset={6}>
+                <Calendar
+                  mode="single"
+                  month={calendarMonth}
+                  onMonthChange={setCalendarMonth}
+                  selected={selectedCalendarDate}
+                  onSelect={(date) => {
+                    if (date) {
+                      setSelectedDayKey(dateKeyFromDate(date))
+                      setDatePickerOpen(false)
+                    }
+                  }}
+                  components={standupCalendarComponents}
+                />
+              </PopoverContent>
+            </Popover>
             <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => shiftDay(1)}>
               <ChevronRight className="h-4 w-4" />
             </Button>
@@ -294,20 +629,12 @@ export function ProductPage() {
 
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
           <aside className="flex w-full shrink-0 flex-col border-b bg-background md:w-72 md:border-b-0 md:border-r">
-            <div className="space-y-3 border-b p-4">
+            <div className="flex items-center justify-between gap-2 border-b p-4">
               <h2 className="text-sm font-semibold">Team</h2>
-              <div className="flex gap-2">
-                <Input
-                  placeholder="New member name"
-                  value={newMemberName}
-                  onChange={(e) => setNewMemberName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && addMember()}
-                  className="h-9"
-                />
-                <Button type="button" size="icon" className="h-9 w-9 shrink-0" onClick={addMember} aria-label="Add member">
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </div>
+              <Button type="button" variant="outline" size="sm" className="gap-1.5 shrink-0" onClick={openMemberAdd}>
+                <Plus className="h-4 w-4" />
+                Add member
+              </Button>
             </div>
             <ScrollArea className="min-h-[200px] max-h-[40vh] flex-1 md:max-h-none">
               <div className="space-y-4 p-4">
@@ -318,19 +645,14 @@ export function ProductPage() {
                   ) : (
                     <ul className="space-y-1">
                       {submittedMembers.map((m) => (
-                        <li
+                        <TeamMemberRow
                           key={m.id}
-                          className="flex items-center gap-2 rounded-md py-1.5 text-sm"
-                        >
-                          <span
-                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold"
-                            style={avatarStyle(m.id)}
-                          >
-                            {initials(m.name)}
-                          </span>
-                          <span className="min-w-0 flex-1 truncate font-medium">{m.name}</span>
-                          <Check className="h-4 w-4 shrink-0 text-primary" aria-hidden />
-                        </li>
+                          member={m}
+                          submitted
+                          sortedMemberIdsForAvatars={sortedMemberIdsForAvatars}
+                          onEdit={() => openMemberEdit(m)}
+                          onDelete={() => removeMember(m.id)}
+                        />
                       ))}
                     </ul>
                   )}
@@ -343,15 +665,14 @@ export function ProductPage() {
                   ) : (
                     <ul className="space-y-1">
                       {notSubmittedMembers.map((m) => (
-                        <li key={m.id} className="flex items-center gap-2 rounded-md py-1.5 text-sm">
-                          <span
-                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold"
-                            style={avatarStyle(m.id)}
-                          >
-                            {initials(m.name)}
-                          </span>
-                          <span className="min-w-0 flex-1 truncate text-muted-foreground">{m.name}</span>
-                        </li>
+                        <TeamMemberRow
+                          key={m.id}
+                          member={m}
+                          submitted={false}
+                          sortedMemberIdsForAvatars={sortedMemberIdsForAvatars}
+                          onEdit={() => openMemberEdit(m)}
+                          onDelete={() => removeMember(m.id)}
+                        />
                       ))}
                     </ul>
                   )}
@@ -361,14 +682,18 @@ export function ProductPage() {
           </aside>
 
           <main className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-muted/20">
-            <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
-              <p className="mb-6 text-center text-sm font-medium text-muted-foreground">{formatDayHeading(selectedDayKey)}</p>
+            <div className="mx-auto max-w-3xl px-4 py-6 sm:px-6">
+              <p className="mb-5 text-center text-sm font-medium text-muted-foreground">{formatDayHeading(selectedDayKey)}</p>
               {state.members.length === 0 ? (
                 <div className="rounded-xl border border-dashed bg-background p-10 text-center">
                   <p className="font-medium">Add team members</p>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Use the sidebar to add people, then submit async standups for the selected day.
+                    Add people to the roster, then submit standups for the selected day.
                   </p>
+                  <Button type="button" className="mt-4 gap-1.5" onClick={openMemberAdd}>
+                    <Plus className="h-4 w-4" />
+                    Add member
+                  </Button>
                 </div>
               ) : filteredSubmissions.length === 0 ? (
                 <div className="rounded-xl border border-dashed bg-background p-10 text-center text-sm text-muted-foreground">
@@ -377,43 +702,54 @@ export function ProductPage() {
                     : 'No standups for this day yet. Click Submit update.'}
                 </div>
               ) : (
-                <ul className="space-y-8">
+                <ul className="space-y-5">
                   {filteredSubmissions.map((s) => {
                     const member = memberById.get(s.memberId)
                     const name = member?.name ?? 'Unknown'
+                    const team = member?.team
                     return (
-                      <li key={s.id} className="rounded-xl border bg-background p-5 shadow-sm">
-                        <div className="mb-4 flex items-center gap-3">
+                      <li
+                        key={s.id}
+                        className="rounded-lg border border-border bg-background p-4 shadow-sm sm:p-5"
+                      >
+                        <div className="mb-3 flex items-center gap-3">
                           <span
-                            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold"
-                            style={avatarStyle(s.memberId)}
+                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-semibold sm:h-10 sm:w-10 sm:text-sm"
+                            style={avatarStyle(s.memberId, sortedMemberIdsForAvatars)}
                           >
                             {initials(name)}
                           </span>
-                          <div className="min-w-0">
-                            <p className="font-semibold leading-tight">{name}</p>
-                            <p className="text-xs text-muted-foreground">{formatSubmissionTime(s.createdAt)}</p>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-base font-semibold leading-tight">{name}</p>
+                              {team ? (
+                                <Badge variant="secondary" className="text-xs font-normal">
+                                  {team}
+                                </Badge>
+                              ) : null}
+                            </div>
+                            <p className="mt-0.5 text-xs text-muted-foreground">{formatSubmissionTime(s.createdAt)}</p>
                           </div>
                         </div>
-                        <div className="space-y-4">
-                          <section className="border-l-4 border-l-blue-500 pl-4">
-                            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <div className="space-y-3.5">
+                          <section className="border-l border-muted-foreground/30 pl-3">
+                            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                               What did you complete yesterday?
                             </h3>
                             <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
                               {s.yesterday || '—'}
                             </p>
                           </section>
-                          <section className="border-l-4 border-l-emerald-500 pl-4">
-                            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          <section className="border-l border-muted-foreground/30 pl-3">
+                            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                               What are you working on today?
                             </h3>
                             <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
                               {s.today || '—'}
                             </p>
                           </section>
-                          <section className="border-l-4 border-l-amber-500 pl-4">
-                            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          <section className="border-l border-muted-foreground/30 pl-3">
+                            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                               What blockers do you have?
                             </h3>
                             <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
@@ -454,7 +790,10 @@ export function ProductPage() {
                 <SelectContent>
                   {state.members.map((m) => (
                     <SelectItem key={m.id} value={m.id}>
-                      {m.name}
+                      <span className="flex items-center gap-2">
+                        <span>{m.name}</span>
+                        <span className="text-xs text-muted-foreground">({m.team})</span>
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -498,6 +837,111 @@ export function ProductPage() {
             </Button>
             <Button type="button" onClick={submitStandup}>
               Submit update
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={memberAddOpen}
+        onOpenChange={(open) => {
+          setMemberAddOpen(open)
+          if (!open) setMemberAddName('')
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add team member</DialogTitle>
+            <DialogDescription>Add someone to the roster with a name and team.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="member-add-name">Name</Label>
+              <Input
+                id="member-add-name"
+                value={memberAddName}
+                onChange={(e) => setMemberAddName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') saveMemberAdd()
+                }}
+                className="h-9"
+                placeholder="Full name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="member-add-team">Team</Label>
+              <Select value={memberAddTeam} onValueChange={(v) => setMemberAddTeam(v as ProductTeam)}>
+                <SelectTrigger id="member-add-team" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PRODUCT_TEAMS.map((t) => (
+                    <SelectItem key={t} value={t}>
+                      {t}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter className="sm:justify-end">
+            <Button type="button" variant="ghost" onClick={() => setMemberAddOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={saveMemberAdd}>
+              Add member
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={memberEditOpen}
+        onOpenChange={(open) => {
+          setMemberEditOpen(open)
+          if (!open) setMemberEditId(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit team member</DialogTitle>
+            <DialogDescription>Change their name and team (Product, UX, or Engineering).</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="member-edit-name">Name</Label>
+              <Input
+                id="member-edit-name"
+                value={memberEditName}
+                onChange={(e) => setMemberEditName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') saveMemberEdit()
+                }}
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="member-edit-team">Team</Label>
+              <Select value={memberEditTeam} onValueChange={(v) => setMemberEditTeam(v as ProductTeam)}>
+                <SelectTrigger id="member-edit-team" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PRODUCT_TEAMS.map((t) => (
+                    <SelectItem key={t} value={t}>
+                      {t}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter className="sm:justify-end">
+            <Button type="button" variant="ghost" onClick={() => setMemberEditOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={saveMemberEdit}>
+              Save
             </Button>
           </DialogFooter>
         </DialogContent>

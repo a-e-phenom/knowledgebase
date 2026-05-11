@@ -7,68 +7,43 @@ export const WORKSPACE_APP_DATA_QA = 'qa'
 /** Row id for Product standup state (`members`, `submissions` JSON). */
 export const WORKSPACE_APP_DATA_PRODUCT_STANDUP = 'product-standup'
 
-let useScopedWorkspaceAppData: boolean | null = null
-
+/**
+ * Load JSON from `workspace_app_data` for the active workspace.
+ * Returns `null` when no row exists. Throws on real DB/network errors (callers may catch).
+ */
 export async function fetchWorkspaceAppDataJson(id: string): Promise<unknown | null> {
   const workspaceId = getActiveWorkspaceId()
-  if (useScopedWorkspaceAppData !== false) {
-    const { data, error } = await supabase
-      .from('workspace_app_data')
-      .select('data')
-      .eq('workspace_id', workspaceId)
-      .eq('id', id)
-      .maybeSingle()
-    if (!error) {
-      useScopedWorkspaceAppData = true
-      return data?.data ?? null
-    }
-    if (error.message.includes('workspace_id')) {
-      useScopedWorkspaceAppData = false
-    } else {
-      console.error('[workspaceAppData] fetch scoped', id, error.message)
-      return null
-    }
-  }
-
   const { data, error } = await supabase
     .from('workspace_app_data')
     .select('data')
+    .eq('workspace_id', workspaceId)
     .eq('id', id)
     .maybeSingle()
+
   if (error) {
-    console.error('[workspaceAppData] fetch legacy', id, error.message)
-    return null
+    console.error('[workspaceAppData] fetch', id, workspaceId, error.message, error.code)
+    throw new Error(error.message)
   }
   return data?.data ?? null
 }
 
+/**
+ * Upsert JSON for `(active workspace, id)`. Always sends `workspace_id` so the composite
+ * primary key `(workspace_id, id)` matches migrations — legacy id-only upserts were unsafe.
+ */
 export async function upsertWorkspaceAppDataJson(id: string, data: Record<string, unknown>): Promise<void> {
   const workspaceId = getActiveWorkspaceId()
-  if (useScopedWorkspaceAppData !== false) {
-    const { error } = await supabase.from('workspace_app_data').upsert(
-      {
-        workspace_id: workspaceId,
-        id,
-        data,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'workspace_id,id' },
-    )
-    if (!error) {
-      useScopedWorkspaceAppData = true
-      return
-    }
-    if (error.message.includes('workspace_id')) {
-      useScopedWorkspaceAppData = false
-    } else {
-      throw error
-    }
-  }
-
-  const { error } = await supabase.from('workspace_app_data').upsert({
+  const row = {
+    workspace_id: workspaceId,
     id,
     data,
     updated_at: new Date().toISOString(),
+  }
+  const { error } = await supabase.from('workspace_app_data').upsert(row, {
+    onConflict: 'workspace_id,id',
   })
-  if (error) throw error
+  if (error) {
+    console.error('[workspaceAppData] upsert', id, workspaceId, error.message, error.code)
+    throw new Error(error.message)
+  }
 }
