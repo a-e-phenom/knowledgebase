@@ -7,8 +7,7 @@ import { DEFAULT_WORKSPACE_ID, getActiveWorkspaceId } from '@/lib/workspaces'
 
 const STORAGE_KEY = 'docHub-product-standup-v1'
 
-function scopedStorageKey(): string {
-  const workspaceId = getActiveWorkspaceId()
+function scopedStorageKeyFor(workspaceId: string): string {
   return workspaceId === DEFAULT_WORKSPACE_ID ? STORAGE_KEY : `${STORAGE_KEY}:${workspaceId}`
 }
 
@@ -89,9 +88,9 @@ export function parseProductStandupPayload(parsed: unknown): ProductStandupState
   }
 }
 
-function readProductStandupFromLocalStorage(): ProductStandupState | null {
+function readProductStandupFromLocalStorage(workspaceId: string): ProductStandupState | null {
   try {
-    const raw = localStorage.getItem(scopedStorageKey())
+    const raw = localStorage.getItem(scopedStorageKeyFor(workspaceId))
     if (!raw) return null
     return parseProductStandupPayload(JSON.parse(raw) as unknown)
   } catch {
@@ -99,44 +98,88 @@ function readProductStandupFromLocalStorage(): ProductStandupState | null {
   }
 }
 
-export function loadProductStandupState(): ProductStandupState {
-  return readProductStandupFromLocalStorage() ?? defaultProductStandupState()
+/** Load from local backup for a specific workspace (defaults to active workspace). */
+export function loadProductStandupState(workspaceId: string = getActiveWorkspaceId()): ProductStandupState {
+  return readProductStandupFromLocalStorage(workspaceId) ?? defaultProductStandupState()
 }
 
-export function saveProductStandupState(state: ProductStandupState) {
+export function saveProductStandupState(
+  state: ProductStandupState,
+  workspaceId: string = getActiveWorkspaceId(),
+) {
   try {
-    localStorage.setItem(scopedStorageKey(), JSON.stringify(state))
+    localStorage.setItem(scopedStorageKeyFor(workspaceId), JSON.stringify(state))
   } catch {
     /* ignore quota */
   }
 }
 
-export async function fetchProductStandupFromSupabase(): Promise<ProductStandupState> {
-  try {
-    const raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_PRODUCT_STANDUP)
-    const parsed = parseProductStandupPayload(raw)
-    if (parsed) return parsed
-  } catch {
-    /* network / RLS / missing table — fall back to browser cache */
-  }
-  return readProductStandupFromLocalStorage() ?? defaultProductStandupState()
+/** Non-null only if this browser has a saved standup blob for the given workspace. */
+export function peekProductStandupLocalBackup(workspaceId: string = getActiveWorkspaceId()): ProductStandupState | null {
+  return readProductStandupFromLocalStorage(workspaceId)
 }
 
-export async function persistProductStandupToSupabase(state: ProductStandupState): Promise<void> {
+function isStandupNonEmpty(s: ProductStandupState | null | undefined): boolean {
+  return !!(s && (s.members.length > 0 || s.submissions.length > 0))
+}
+
+/**
+ * Load standup for `workspaceId` (defaults to active workspace).
+ * If Supabase has no row or an empty payload but this browser has a non-empty backup for that
+ * workspace, the backup is used.
+ */
+export async function fetchProductStandupFromSupabase(
+  workspaceId: string = getActiveWorkspaceId(),
+): Promise<ProductStandupState> {
+  const local = readProductStandupFromLocalStorage(workspaceId)
+  const localRich = isStandupNonEmpty(local)
+
+  try {
+    const raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_PRODUCT_STANDUP, workspaceId)
+
+    if (raw === null) {
+      return localRich && local ? local : defaultProductStandupState()
+    }
+
+    const parsed = parseProductStandupPayload(raw)
+    if (!parsed) {
+      return localRich && local ? local : defaultProductStandupState()
+    }
+
+    if (isStandupNonEmpty(parsed)) {
+      return parsed
+    }
+
+    if (localRich && local) {
+      return local
+    }
+
+    return parsed
+  } catch {
+    return localRich && local ? local : defaultProductStandupState()
+  }
+}
+
+export async function persistProductStandupToSupabase(
+  state: ProductStandupState,
+  workspaceId: string = getActiveWorkspaceId(),
+): Promise<void> {
   await upsertWorkspaceAppDataJson(
     WORKSPACE_APP_DATA_PRODUCT_STANDUP,
     state as unknown as Record<string, unknown>,
+    workspaceId,
   )
 }
 
 export async function migrateProductStandupLocalToSupabaseOnce(): Promise<void> {
-  const remote = await fetchProductStandupFromSupabase()
+  const id = getActiveWorkspaceId()
+  const remote = await fetchProductStandupFromSupabase(id)
   if (remote.members.length > 0 || remote.submissions.length > 0) return
-  const local = readProductStandupFromLocalStorage()
+  const local = readProductStandupFromLocalStorage(id)
   if (!local || (local.members.length === 0 && local.submissions.length === 0)) return
-  await persistProductStandupToSupabase(local)
+  await persistProductStandupToSupabase(local, id)
   try {
-    localStorage.removeItem(scopedStorageKey())
+    localStorage.removeItem(scopedStorageKeyFor(id))
   } catch {
     /* ignore */
   }

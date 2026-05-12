@@ -11,17 +11,17 @@ export const WORKSPACE_APP_DATA_PRODUCT_STANDUP = 'product-standup'
  * Load JSON from `workspace_app_data` for the active workspace.
  * Returns `null` when no row exists. Throws on real DB/network errors (callers may catch).
  */
-export async function fetchWorkspaceAppDataJson(id: string): Promise<unknown | null> {
-  const workspaceId = getActiveWorkspaceId()
+export async function fetchWorkspaceAppDataJson(id: string, workspaceId?: string): Promise<unknown | null> {
+  const ws = workspaceId ?? getActiveWorkspaceId()
   const { data, error } = await supabase
     .from('workspace_app_data')
     .select('data')
-    .eq('workspace_id', workspaceId)
+    .eq('workspace_id', ws)
     .eq('id', id)
     .maybeSingle()
 
   if (error) {
-    console.error('[workspaceAppData] fetch', id, workspaceId, error.message, error.code)
+    console.error('[workspaceAppData] fetch', id, ws, error.message, error.code)
     throw new Error(error.message)
   }
   return data?.data ?? null
@@ -31,10 +31,14 @@ export async function fetchWorkspaceAppDataJson(id: string): Promise<unknown | n
  * Upsert JSON for `(active workspace, id)`. Always sends `workspace_id` so the composite
  * primary key `(workspace_id, id)` matches migrations — legacy id-only upserts were unsafe.
  */
-export async function upsertWorkspaceAppDataJson(id: string, data: Record<string, unknown>): Promise<void> {
-  const workspaceId = getActiveWorkspaceId()
+export async function upsertWorkspaceAppDataJson(
+  id: string,
+  data: Record<string, unknown>,
+  workspaceId?: string,
+): Promise<void> {
+  const ws = workspaceId ?? getActiveWorkspaceId()
   const row = {
-    workspace_id: workspaceId,
+    workspace_id: ws,
     id,
     data,
     updated_at: new Date().toISOString(),
@@ -43,7 +47,7 @@ export async function upsertWorkspaceAppDataJson(id: string, data: Record<string
     onConflict: 'workspace_id,id',
   })
   if (error) {
-    console.error('[workspaceAppData] upsert', id, workspaceId, error.message, error.code)
+    console.error('[workspaceAppData] upsert', id, ws, error.message, error.code)
     throw new Error(error.message)
   }
 }

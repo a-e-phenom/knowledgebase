@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -83,6 +83,19 @@ export function AppShell() {
     () => basePathWithoutWorkspaceSlug(location.pathname, workspaces),
     [location.pathname, workspaces],
   )
+
+  /** Align module + React workspace id with the URL before child useEffects run (avoids wrong-workspace data). */
+  useLayoutEffect(() => {
+    if (workspaces.length === 0) return
+    const fromPath = workspaceIdFromPath(location.pathname, workspaces)
+    const defaultId = workspaces.some((w) => w.id === DEFAULT_WORKSPACE_ID) ? DEFAULT_WORKSPACE_ID : workspaces[0]?.id
+    const initialId = fromPath ?? defaultId
+    if (!initialId) return
+    if (initialId === getActiveWorkspaceId()) return
+    setActiveWorkspaceId(initialId)
+    setActiveWorkspaceIdState(initialId)
+  }, [location.pathname, workspaces])
+
   useEffect(() => {
     setWorkspaceRouteReady(false)
     void (async () => {

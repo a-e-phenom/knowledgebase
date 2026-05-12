@@ -7,6 +7,7 @@ import {
   type ComponentProps,
   type CSSProperties,
 } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -38,6 +39,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Calendar, CalendarDayButton } from '@/components/ui/calendar'
 import { cn } from '@/lib/utils'
+import type { AppShellOutletContext } from '@/components/AppShell'
 import {
   defaultProductStandupState,
   loadProductStandupState,
@@ -264,11 +266,14 @@ function TeamMemberRow({
 }
 
 export function ProductPage() {
+  const { activeWorkspace, workspaceRouteReady } = useOutletContext<AppShellOutletContext>()
   const [state, setState] = useState<ProductStandupState>(() => defaultProductStandupState())
   const [standupRemoteReady, setStandupRemoteReady] = useState(false)
   const remoteSaveEnabledRef = useRef(true)
   const stateRef = useRef<ProductStandupState>(state)
   const standupRemoteReadyRef = useRef(false)
+  /** Supabase + localStorage scope for this page instance (never follow global id changes mid-unmount). */
+  const standupWorkspaceScopeRef = useRef<string | null>(null)
   const [selectedDayKey, setSelectedDayKey] = useState(() => dateKeyFromDate(new Date()))
   const [search, setSearch] = useState('')
   const [memberAddOpen, setMemberAddOpen] = useState(false)
@@ -290,20 +295,24 @@ export function ProductPage() {
   standupRemoteReadyRef.current = standupRemoteReady
 
   useEffect(() => {
+    if (!workspaceRouteReady || !activeWorkspace) return
+    const scopeId = activeWorkspace.id
+    standupWorkspaceScopeRef.current = scopeId
+    setStandupRemoteReady(false)
     let cancelled = false
     void (async () => {
       try {
-        const s = await fetchProductStandupFromSupabase()
+        const s = await fetchProductStandupFromSupabase(scopeId)
         if (!cancelled) {
           setState(s)
-          saveProductStandupState(s)
+          saveProductStandupState(s, scopeId)
           remoteSaveEnabledRef.current = true
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Unknown error'
         toast.error('Could not load Product standup', { description: msg })
         if (!cancelled) {
-          const local = loadProductStandupState()
+          const local = loadProductStandupState(scopeId)
           if (local.members.length > 0 || local.submissions.length > 0) {
             setState(local)
           } else {
@@ -318,24 +327,26 @@ export function ProductPage() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [workspaceRouteReady, activeWorkspace?.id])
 
   useEffect(() => {
     if (!standupRemoteReady) return
+    const wsId = standupWorkspaceScopeRef.current
+    if (!wsId) return
     const t = window.setTimeout(() => {
       const snap = stateRef.current
       if (remoteSaveEnabledRef.current) {
-        void persistProductStandupToSupabase(snap)
+        void persistProductStandupToSupabase(snap, wsId)
           .then(() => {
-            saveProductStandupState(snap)
+            saveProductStandupState(snap, wsId)
           })
           .catch((err: unknown) => {
             const msg = err instanceof Error ? err.message : 'Unknown error'
             toast.error('Standup sync failed', { description: msg })
-            saveProductStandupState(snap)
+            saveProductStandupState(snap, wsId)
           })
       } else {
-        saveProductStandupState(snap)
+        saveProductStandupState(snap, wsId)
       }
     }, STANDUP_SAVE_DEBOUNCE_MS)
     return () => window.clearTimeout(t)
@@ -346,12 +357,14 @@ export function ProductPage() {
     return () => {
       if (!standupRemoteReadyRef.current) return
       const snap = stateRef.current
+      const wsId = standupWorkspaceScopeRef.current
+      if (!wsId) return
       if (remoteSaveEnabledRef.current) {
-        void persistProductStandupToSupabase(snap)
-          .then(() => saveProductStandupState(snap))
-          .catch(() => saveProductStandupState(snap))
+        void persistProductStandupToSupabase(snap, wsId)
+          .then(() => saveProductStandupState(snap, wsId))
+          .catch(() => saveProductStandupState(snap, wsId))
       } else {
-        saveProductStandupState(snap)
+        saveProductStandupState(snap, wsId)
       }
     }
   }, [])
@@ -360,7 +373,8 @@ export function ProductPage() {
   useEffect(() => {
     const onPageHide = () => {
       if (!standupRemoteReadyRef.current) return
-      saveProductStandupState(stateRef.current)
+      const wsId = standupWorkspaceScopeRef.current
+      if (wsId) saveProductStandupState(stateRef.current, wsId)
     }
     window.addEventListener('pagehide', onPageHide)
     return () => window.removeEventListener('pagehide', onPageHide)
@@ -559,7 +573,7 @@ export function ProductPage() {
     toast.success('Standup saved')
   }
 
-  if (!standupRemoteReady) {
+  if (!workspaceRouteReady || !activeWorkspace || !standupRemoteReady) {
     return (
       <div className="flex min-h-screen flex-col bg-background">
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-16 text-center">
@@ -576,7 +590,10 @@ export function ProductPage() {
         <div className="flex flex-wrap items-center gap-3 border-b bg-background px-4 py-3 sm:px-6">
           <div className="min-w-0 flex-1">
             <h1 className="text-lg font-semibold tracking-tight">Team updates</h1>
-            <p className="text-xs text-muted-foreground">Async standups</p>
+            <p className="text-xs text-muted-foreground">
+              Async standups
+
+            </p>
           </div>
           <div className="flex items-center gap-1 rounded-lg border bg-background px-1 py-0.5 shadow-sm">
             <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => shiftDay(-1)}>
