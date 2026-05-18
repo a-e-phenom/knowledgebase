@@ -11,13 +11,23 @@ const STORAGE_KEY = 'docHub-qa-v2'
 const LEGACY_KEY = 'docHub-qa-v1'
 
 /** AE keeps legacy key; other workspaces are isolated in localStorage. */
-function scopedQaStorageKey(): string {
-  const id = getActiveWorkspaceId()
-  if (id === DEFAULT_WORKSPACE_ID) return STORAGE_KEY
-  return `${STORAGE_KEY}:${id}`
+function scopedQaStorageKey(workspaceId: string = getActiveWorkspaceId()): string {
+  if (workspaceId === DEFAULT_WORKSPACE_ID) return STORAGE_KEY
+  return `${STORAGE_KEY}:${workspaceId}`
+}
+
+function countQaFindings(state: QaState): number {
+  let n = 0
+  for (const s of state.sessions) n += s.findings.length
+  return n
 }
 
 export type QaPriority = 'low' | 'medium' | 'high' | 'critical'
+
+/** Estimated implementation effort (distinct from priority / severity). */
+export type QaEffort = 'low' | 'medium' | 'high'
+
+export const QA_EFFORTS: QaEffort[] = ['low', 'medium', 'high']
 
 export type QaEnvironment = 'STG' | 'STGIR' | 'INTQA' | 'PROD'
 
@@ -104,6 +114,7 @@ export type QaFinding = {
   description: string
   tags: string[]
   priority: QaPriority
+  effort: QaEffort
   status: QaStatus
   environment: QaEnvironment
   categories: QaCategory[]
@@ -136,6 +147,10 @@ export function defaultQaState(): QaState {
 
 function isPriority(x: unknown): x is QaPriority {
   return x === 'low' || x === 'medium' || x === 'high' || x === 'critical'
+}
+
+function isEffort(x: unknown): x is QaEffort {
+  return x === 'low' || x === 'medium' || x === 'high'
 }
 
 function isEnvironment(x: unknown): x is QaEnvironment {
@@ -187,6 +202,7 @@ function parseFinding(raw: unknown): QaFinding | null {
   const description = typeof o.description === 'string' ? o.description : ''
   const tags = Array.isArray(o.tags) ? o.tags.filter((t): t is string => typeof t === 'string') : []
   const priority = isPriority(o.priority) ? o.priority : 'medium'
+  const effort = isEffort(o.effort) ? o.effort : 'medium'
   const status = normalizeQaStatus(o.status)
   const environment = isEnvironment(o.environment) ? o.environment : 'STG'
   // Support both new `categories` array and legacy single `category`.
@@ -207,6 +223,7 @@ function parseFinding(raw: unknown): QaFinding | null {
     description,
     tags,
     priority,
+    effort,
     status,
     environment,
     categories,
@@ -239,9 +256,9 @@ export function parseQaStatePayload(parsed: unknown): QaState | null {
   return { sessions }
 }
 
-function readStoredState(): QaState | null {
+export function readStoredState(workspaceId: string = getActiveWorkspaceId()): QaState | null {
   try {
-    const key = scopedQaStorageKey()
+    const key = scopedQaStorageKey(workspaceId)
     let raw = localStorage.getItem(key)
     if (!raw && key === STORAGE_KEY) {
       raw = localStorage.getItem(LEGACY_KEY)
@@ -260,9 +277,9 @@ export function loadQaState(): QaState {
   return defaultQaState()
 }
 
-export function saveQaState(state: QaState) {
+export function saveQaState(state: QaState, workspaceId: string = getActiveWorkspaceId()) {
   try {
-    const key = scopedQaStorageKey()
+    const key = scopedQaStorageKey(workspaceId)
     localStorage.setItem(key, JSON.stringify(state))
     if (key === STORAGE_KEY) {
       try {
@@ -276,15 +293,16 @@ export function saveQaState(state: QaState) {
   }
 }
 
-/** Load QA state from Supabase (empty object if missing or invalid). */
-export async function fetchQaStateFromSupabase(): Promise<QaState> {
-  const normalized = await fetchQaStateFromNormalizedTables()
-  if (normalized && normalized.sessions.length > 0) {
-    return mergeCommentsAndScreenshotsFromWorkspaceBlob(normalized)
+/** Load QA state from Supabase for a specific workspace (defaults to active workspace). */
+export async function fetchQaStateFromSupabase(workspaceId: string = getActiveWorkspaceId()): Promise<QaState> {
+  const normalized = await fetchQaStateFromNormalizedTables(workspaceId)
+  const normalizedFindings = normalized ? countQaFindings(normalized) : 0
+  if (normalized && normalizedFindings > 0) {
+    return mergeCommentsAndScreenshotsFromWorkspaceBlob(normalized, workspaceId)
   }
   let raw: unknown | null = null
   try {
-    raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA)
+    raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA, workspaceId)
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     console.warn('[qaStorage] workspace_app_data fetch failed:', message)
@@ -295,7 +313,7 @@ export async function fetchQaStateFromSupabase(): Promise<QaState> {
   // return blob data and opportunistically rehydrate normalized tables.
   if (blobState.sessions.length > 0 && (!normalized || normalized.sessions.length === 0)) {
     try {
-      await persistQaStateToNormalizedTables(blobState)
+      await persistQaStateToNormalizedTables(blobState, workspaceId)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.warn('[qaStorage] normalized rehydrate failed:', message)
@@ -305,11 +323,15 @@ export async function fetchQaStateFromSupabase(): Promise<QaState> {
 
   // Last-resort recovery: browser backup for this workspace only (scoped key).
   // Never read the AE legacy key when viewing another workspace — that caused AE items to appear in CRM.
-  const localBackup = readStoredState()
+  const localBackup = readStoredState(workspaceId)
   if (localBackup && localBackup.sessions.length > 0) {
     try {
-      await persistQaStateToNormalizedTables(localBackup)
-      await upsertWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA, localBackup as unknown as Record<string, unknown>)
+      await persistQaStateToNormalizedTables(localBackup, workspaceId)
+      await upsertWorkspaceAppDataJson(
+        WORKSPACE_APP_DATA_QA,
+        localBackup as unknown as Record<string, unknown>,
+        workspaceId,
+      )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.warn('[qaStorage] local backup rehydrate failed:', message)
@@ -317,11 +339,18 @@ export async function fetchQaStateFromSupabase(): Promise<QaState> {
     return localBackup
   }
 
-  if (normalized) return normalized
-  return blobState
+  if (normalized && normalizedFindings > 0) return normalized
+
+  const afterBlob = blobState
+  if (countQaFindings(afterBlob) > 0) return afterBlob
+
+  return recoverEmptyWorkspaceQaFromDatabase(workspaceId, afterBlob)
 }
 
-export async function persistQaStateToSupabase(state: QaState): Promise<void> {
+export async function persistQaStateToSupabase(
+  state: QaState,
+  workspaceId: string = getActiveWorkspaceId(),
+): Promise<void> {
   const countMedia = (s: QaState): { comments: number; screenshots: number } => {
     let comments = 0
     let screenshots = 0
@@ -375,13 +404,13 @@ export async function persistQaStateToSupabase(state: QaState): Promise<void> {
 
   const baselineCandidates: QaState[] = []
   try {
-    const normalized = await fetchQaStateFromNormalizedTables()
+    const normalized = await fetchQaStateFromNormalizedTables(workspaceId)
     if (normalized) baselineCandidates.push(normalized)
   } catch {
     /* best effort guard */
   }
   try {
-    const raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA)
+    const raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA, workspaceId)
     const blob = parseQaStatePayload(raw)
     if (blob) baselineCandidates.push(blob)
   } catch {
@@ -397,23 +426,42 @@ export async function persistQaStateToSupabase(state: QaState): Promise<void> {
     safeState = mergeMissingMediaFromBackup(safeState, baseline, recoverComments, recoverScreenshots)
   }
 
-  await persistQaStateToNormalizedTables(safeState)
-  await upsertWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA, safeState as unknown as Record<string, unknown>)
+  const incomingFindings = countQaFindings(safeState)
+  let remoteFindings = 0
+  for (const b of baselineCandidates) {
+    remoteFindings = Math.max(remoteFindings, countQaFindings(b))
+  }
+  if (incomingFindings === 0 && remoteFindings > 0) {
+    const err = new Error(
+      `Refusing to save QA: would delete ${remoteFindings} remote finding(s) in this workspace with an empty local state. Reload the page; if this persists, restore from a Supabase backup.`,
+    )
+    console.error('[qaStorage]', err.message)
+    throw err
+  }
+
+  await persistQaStateToNormalizedTables(safeState, workspaceId)
+  await upsertWorkspaceAppDataJson(
+    WORKSPACE_APP_DATA_QA,
+    safeState as unknown as Record<string, unknown>,
+    workspaceId,
+  )
 }
 
 /**
  * If the remote row is empty but this browser still has v1/v2 localStorage QA data,
  * upload once and remove local keys so Supabase becomes the source of truth.
  */
-export async function migrateQaLocalStorageToSupabaseOnce(): Promise<void> {
-  const remote = await fetchQaStateFromSupabase()
+export async function migrateQaLocalStorageToSupabaseOnce(
+  workspaceId: string = getActiveWorkspaceId(),
+): Promise<void> {
+  const remote = await fetchQaStateFromSupabase(workspaceId)
   if (remote.sessions.length > 0) return
-  const local = readStoredState()
+  const local = readStoredState(workspaceId)
   if (!local || local.sessions.length === 0) return
-  await persistQaStateToSupabase(local)
+  await persistQaStateToSupabase(local, workspaceId)
   try {
-    localStorage.removeItem(scopedQaStorageKey())
-    if (scopedQaStorageKey() === STORAGE_KEY) {
+    localStorage.removeItem(scopedQaStorageKey(workspaceId))
+    if (scopedQaStorageKey(workspaceId) === STORAGE_KEY) {
       localStorage.removeItem(LEGACY_KEY)
     }
   } catch {
@@ -436,6 +484,7 @@ type QaFindingRow = {
   description: string
   tags: string[] | null
   priority: string
+  effort: string
   status: string
   environment: string
   categories: string[] | null
@@ -569,6 +618,7 @@ function mapQaRowsToState(
       description: f.description ?? '',
       tags: Array.isArray(f.tags) ? f.tags : [],
       priority: isPriority(f.priority) ? f.priority : 'medium',
+      effort: isEffort(f.effort) ? f.effort : 'medium',
       status: normalizeQaStatus(f.status),
       environment: isEnvironment(f.environment) ? f.environment : 'STG',
       categories: parseCategories(f.categories),
@@ -596,11 +646,26 @@ function mapQaRowsToState(
 
 const MAX_COMMENT_INSERT_PAYLOAD_CHARS = 1_500_000
 
+/**
+ * No cross-workspace QA import. Each workspace only uses its own blob, normalized rows,
+ * and localStorage backup (see fetchQaStateFromSupabase). Importing another workspace's
+ * data caused AE/CRM bleed and destructive overwrites after the Supabase move.
+ */
+async function recoverEmptyWorkspaceQaFromDatabase(
+  _workspaceId: string,
+  current: QaState,
+): Promise<QaState> {
+  return current
+}
+
 /** If normalized `qa_comments` / `qa_screenshots` rows are missing or incomplete, fill from last good `workspace_app_data` blob. */
-async function mergeCommentsAndScreenshotsFromWorkspaceBlob(state: QaState): Promise<QaState> {
+async function mergeCommentsAndScreenshotsFromWorkspaceBlob(
+  state: QaState,
+  workspaceId: string = getActiveWorkspaceId(),
+): Promise<QaState> {
   let raw: unknown
   try {
-    raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA)
+    raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA, workspaceId)
   } catch {
     return state
   }
@@ -654,8 +719,86 @@ async function mergeCommentsAndScreenshotsFromWorkspaceBlob(state: QaState): Pro
   return changed ? { sessions } : state
 }
 
-async function fetchQaStateFromNormalizedTables(): Promise<QaState | null> {
-  const workspaceId = getActiveWorkspaceId()
+const QA_FINDINGS_SELECT_WITH_EFFORT =
+  'workspace_id, id, session_id, title, description, tags, priority, effort, status, environment, categories, figma_link, ticket_link, assignee, reporter, created_at, updated_at'
+
+const QA_FINDINGS_SELECT_LEGACY =
+  'workspace_id, id, session_id, title, description, tags, priority, status, environment, categories, figma_link, ticket_link, assignee, reporter, created_at, updated_at'
+
+async function fetchAllQaFindingRowsForWorkspace(workspaceId: string): Promise<QaFindingRow[]> {
+  const runSelect = async (columns: string) => {
+    const { data, error } = await supabase
+      .from('qa_findings')
+      .select(columns)
+      .eq('workspace_id', workspaceId)
+      .order('created_at', { ascending: false })
+    return { data, error }
+  }
+
+  let { data, error } = await runSelect(QA_FINDINGS_SELECT_WITH_EFFORT)
+  if (error && /effort/i.test(error.message)) {
+    const legacy = await runSelect(QA_FINDINGS_SELECT_LEGACY)
+    data = legacy.data
+    error = legacy.error
+  }
+  if (error) throw error
+  return ((data ?? []) as unknown) as QaFindingRow[]
+}
+
+/** Rebuild session rows when findings exist but qa_sessions rows are missing for this workspace. */
+async function reconcileQaSessionsWithFindings(
+  workspaceId: string,
+  sessionRows: QaSessionRow[],
+  findings: QaFindingRow[],
+): Promise<QaSessionRow[]> {
+  if (findings.length === 0) return sessionRows
+
+  const byId = new Map(sessionRows.map((s) => [s.id, s]))
+  const missingSessionIds = [...new Set(findings.map((f) => f.session_id).filter(Boolean))].filter(
+    (id) => !byId.has(id),
+  )
+  if (missingSessionIds.length === 0) return sessionRows
+
+  const { data: globalSessionRows, error } = await supabase
+    .from('qa_sessions')
+    .select('workspace_id, id, name, created_at')
+    .in('id', missingSessionIds)
+
+  if (!error && globalSessionRows?.length) {
+    for (const row of globalSessionRows as QaSessionRow[]) {
+      if (!byId.has(row.id)) {
+        byId.set(row.id, {
+          workspace_id: workspaceId,
+          id: row.id,
+          name: row.name,
+          created_at: row.created_at,
+        })
+      }
+    }
+  }
+
+  for (const sessionId of missingSessionIds) {
+    if (byId.has(sessionId)) continue
+    const linked = findings.filter((f) => f.session_id === sessionId)
+    const oldest = linked.reduce(
+      (min, f) => (f.created_at < min ? f.created_at : min),
+      linked[0]?.created_at ?? new Date().toISOString(),
+    )
+    console.warn(
+      `[qaStorage] Recovered QA page "${sessionId}" from ${linked.length} finding(s) (session row was missing for workspace ${workspaceId})`,
+    )
+    byId.set(sessionId, {
+      workspace_id: workspaceId,
+      id: sessionId,
+      name: 'Recovered QA page',
+      created_at: oldest,
+    })
+  }
+
+  return [...byId.values()].sort(compareIsoDescThenIdDesc)
+}
+
+async function fetchQaStateFromNormalizedTables(workspaceId: string = getActiveWorkspaceId()): Promise<QaState | null> {
   const { data: sessionRows, error: sessionsError } = await supabase
     .from('qa_sessions')
     .select('workspace_id, id, name, created_at')
@@ -665,23 +808,24 @@ async function fetchQaStateFromNormalizedTables(): Promise<QaState | null> {
     if (isMissingQaTablesError(sessionsError.message)) return null
     throw sessionsError
   }
-  const sessions = (sessionRows ?? []) as QaSessionRow[]
-  if (sessions.length === 0) return { sessions: [] }
 
-  const sessionIds = sessions.map((s) => s.id)
-  const { data: findingRows, error: findingsError } = await supabase
-    .from('qa_findings')
-    .select(
-      'workspace_id, id, session_id, title, description, tags, priority, status, environment, categories, figma_link, ticket_link, assignee, reporter, created_at, updated_at',
-    )
-    .eq('workspace_id', workspaceId)
-    .in('session_id', sessionIds)
-    .order('created_at', { ascending: false })
-  if (findingsError) {
-    if (isMissingQaTablesError(findingsError.message)) return null
+  let findings: QaFindingRow[]
+  try {
+    findings = await fetchAllQaFindingRowsForWorkspace(workspaceId)
+  } catch (findingsError) {
+    const message = findingsError instanceof Error ? findingsError.message : String(findingsError)
+    if (isMissingQaTablesError(message)) return null
     throw findingsError
   }
-  const findings = (findingRows ?? []) as QaFindingRow[]
+
+  const sessions = await reconcileQaSessionsWithFindings(
+    workspaceId,
+    (sessionRows ?? []) as QaSessionRow[],
+    findings,
+  )
+
+  if (sessions.length === 0 && findings.length === 0) return { sessions: [] }
+
   const findingIds = findings.map((f) => f.id)
 
   let comments: QaCommentRow[] = []
@@ -720,8 +864,10 @@ async function fetchQaStateFromNormalizedTables(): Promise<QaState | null> {
   return mapQaRowsToState(sessions, findings, comments, screenshots)
 }
 
-async function persistQaStateToNormalizedTables(state: QaState): Promise<void> {
-  const workspaceId = getActiveWorkspaceId()
+async function persistQaStateToNormalizedTables(
+  state: QaState,
+  workspaceId: string = getActiveWorkspaceId(),
+): Promise<void> {
   const sessionsPayload = state.sessions.map((s) => ({
     workspace_id: workspaceId,
     id: s.id,
@@ -737,6 +883,7 @@ async function persistQaStateToNormalizedTables(state: QaState): Promise<void> {
       description: f.description,
       tags: f.tags,
       priority: f.priority,
+      effort: f.effort,
       status: f.status,
       environment: f.environment,
       categories: f.categories,

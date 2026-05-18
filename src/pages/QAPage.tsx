@@ -50,6 +50,7 @@ import {
 import {
   defaultQaState,
   saveQaState,
+  readStoredState,
   fetchQaStateFromSupabase,
   persistQaStateToSupabase,
   newId,
@@ -60,10 +61,12 @@ import {
   qaScreenshotLimits,
   QA_ENVIRONMENTS,
   QA_CATEGORIES,
+  QA_EFFORTS,
   QA_STATUSES,
   qaStatusLabel,
   type QaCategory,
   type QaComment,
+  type QaEffort,
   type QaEnvironment,
   type QaFinding,
   type QaPriority,
@@ -82,10 +85,12 @@ import {
   CircleDot,
   Clock,
   Flag,
+  Gauge,
   Globe,
   Hash,
   ImagePlus,
   Layers,
+  LayoutGrid,
   Link2,
   MessageSquare,
   MoreVertical,
@@ -184,6 +189,7 @@ type FindingInlinePatch = Partial<
     QaFinding,
     | 'status'
     | 'priority'
+    | 'effort'
     | 'environment'
     | 'categories'
     | 'assignee'
@@ -257,19 +263,96 @@ function CategorySelectionPreview({ categories }: { categories: QaCategory[] }) 
   )
 }
 
-function priorityBadgeClass(p: QaPriority): string {
-  switch (p) {
-    case 'low':
-      return 'border-muted-foreground/30 bg-muted/50 text-muted-foreground'
-    case 'medium':
-      return 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300'
-    case 'high':
-      return 'border-amber-500/40 bg-amber-500/15 text-amber-900 dark:text-amber-200'
-    case 'critical':
-      return ''
-    default:
-      return ''
-  }
+/** Three ascending bars for card chips: low (1 green), medium (2 orange), high/critical (3 red). */
+function QaCardLevelBars({ level }: { level: 'low' | 'medium' | 'high' | 'critical' }) {
+  const inactive = 'bg-neutral-200 dark:bg-neutral-600'
+  const nActive = level === 'low' ? 1 : level === 'medium' ? 2 : 3
+  const activeClass =
+    level === 'low'
+      ? 'bg-emerald-500 dark:bg-emerald-400'
+      : level === 'medium'
+        ? 'bg-orange-500 dark:bg-orange-400'
+        : level === 'critical'
+          ? 'bg-red-600 dark:bg-red-500'
+          : 'bg-red-500 dark:bg-red-400'
+
+  return (
+    <span className="inline-flex h-3 shrink-0 items-end gap-px" aria-hidden>
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className={cn(
+            'w-[3px] rounded-sm',
+            i === 0 && 'h-1',
+            i === 1 && 'h-2',
+            i === 2 && 'h-3',
+            i < nActive ? activeClass : inactive,
+          )}
+        />
+      ))}
+    </span>
+  )
+}
+
+function qaMatrixHighPriority(p: QaPriority): boolean {
+  return p === 'high' || p === 'critical'
+}
+
+function qaMatrixHighEffort(e: QaEffort): boolean {
+  return e === 'medium' || e === 'high'
+}
+
+function PrioritizationQuadrant({
+  title,
+  hint,
+  findings,
+  onPickFinding,
+  accent,
+}: {
+  title: string
+  hint: string
+  findings: QaFinding[]
+  onPickFinding: (f: QaFinding) => void
+  accent: 'emerald' | 'amber' | 'slate' | 'rose'
+}) {
+  const shell = {
+    emerald: 'border-emerald-500/25 bg-emerald-500/[0.06]',
+    amber: 'border-amber-500/25 bg-amber-500/[0.06]',
+    slate: 'border-border bg-muted/40',
+    rose: 'border-rose-500/25 bg-rose-500/[0.06]',
+  }[accent]
+
+  return (
+    <div
+      className={cn(
+        'flex h-full min-h-0 flex-col overflow-hidden rounded-lg border p-2.5 sm:p-3',
+        shell,
+      )}
+    >
+      <div className="mb-1.5 shrink-0">
+        <p className="text-xs font-semibold leading-tight text-foreground">{title}</p>
+        <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{hint}</p>
+      </div>
+      <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-0.5">
+        {findings.length === 0 ? (
+          <li className="text-[11px] text-muted-foreground">No items</li>
+        ) : (
+          findings.map((f) => (
+            <li key={f.id}>
+              <button
+                type="button"
+                className="w-full truncate rounded px-1 py-0.5 text-left text-[11px] text-foreground transition-colors hover:bg-background/80"
+                title={f.title}
+                onClick={() => onPickFinding(f)}
+              >
+                {f.title}
+              </button>
+            </li>
+          ))
+        )}
+      </ul>
+    </div>
+  )
 }
 
 function formatTime(iso: string) {
@@ -569,6 +652,7 @@ export function QAPage() {
   const [findingTitle, setFindingTitle] = useState('')
   const [findingDocHtml, setFindingDocHtml] = useState('')
   const [findingPriority, setFindingPriority] = useState<QaPriority>('medium')
+  const [findingEffort, setFindingEffort] = useState<QaEffort>('medium')
   const [findingStatus, setFindingStatus] = useState<QaStatus>('not_started')
   const [findingEnvironment, setFindingEnvironment] = useState<QaEnvironment>('STG')
   const [findingCategories, setFindingCategories] = useState<QaCategory[]>(['bugs'])
@@ -587,6 +671,7 @@ export function QAPage() {
 
   const [sessionToDelete, setSessionToDelete] = useState<QaSession | null>(null)
   const [findingToDelete, setFindingToDelete] = useState<{ sessionId: string; findingId: string } | null>(null)
+  const [prioritizationSchemeOpen, setPrioritizationSchemeOpen] = useState(false)
 
   const [docModalTitle, setDocModalTitle] = useState('')
   const [docModalHtml, setDocModalHtml] = useState('')
@@ -606,12 +691,16 @@ export function QAPage() {
   const [filterCategories, setFilterCategories] = useState<QaCategory[]>([])
   const skipNextAutosaveRef = useRef(true)
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve())
+  /** Supabase scope for this page instance (never follow global id changes mid-unmount). */
+  const qaWorkspaceScopeRef = useRef<string | null>(null)
 
   const enqueueQaPersist = useCallback(
     (nextState: QaState) => {
       if (!qaRemoteReady) return
+      const wsId = qaWorkspaceScopeRef.current
+      if (!wsId) return
       if (!remoteSaveEnabledRef.current) {
-        saveQaState(nextState)
+        saveQaState(nextState, wsId)
         return
       }
 
@@ -621,11 +710,12 @@ export function QAPage() {
         })
         .then(async () => {
           try {
-            await persistQaStateToSupabase(nextState)
+            await persistQaStateToSupabase(nextState, wsId)
+            saveQaState(nextState, wsId)
           } catch (err) {
             const msg = describeError(err, 'Unknown error')
             toast.error('QA sync failed', { description: msg })
-            saveQaState(nextState)
+            saveQaState(nextState, wsId)
           }
         })
     },
@@ -633,25 +723,31 @@ export function QAPage() {
   )
 
   useEffect(() => {
-    if (!workspaceRouteReady) {
+    if (!workspaceRouteReady || !activeWorkspace) {
       setQaRemoteReady(false)
       setState(defaultQaState())
+      qaWorkspaceScopeRef.current = null
       return
     }
+    const scopeId = activeWorkspace.id
+    qaWorkspaceScopeRef.current = scopeId
+    setQaRemoteReady(false)
     skipNextAutosaveRef.current = true
     let cancelled = false
     void (async () => {
       try {
-        const s = await fetchQaStateFromSupabase()
+        const s = await fetchQaStateFromSupabase(scopeId)
         if (!cancelled) {
           setState(s)
+          saveQaState(s, scopeId)
           remoteSaveEnabledRef.current = true
         }
       } catch (e) {
         const msg = describeError(e, 'Unknown error')
         toast.error('Could not load QA from workspace', { description: msg })
         if (!cancelled) {
-          setState(defaultQaState())
+          const local = readStoredState(scopeId)
+          setState(local && local.sessions.length > 0 ? local : defaultQaState())
           remoteSaveEnabledRef.current = false
         }
       } finally {
@@ -661,7 +757,7 @@ export function QAPage() {
     return () => {
       cancelled = true
     }
-  }, [workspaceRouteReady])
+  }, [workspaceRouteReady, activeWorkspace?.id])
 
   useEffect(() => {
     if (!qaRemoteReady) return
@@ -781,6 +877,25 @@ export function QAPage() {
     filterCategories,
   ])
 
+  const prioritizationBuckets = useMemo(() => {
+    const quickWins: QaFinding[] = []
+    const strategic: QaFinding[] = []
+    const fillIn: QaFinding[] = []
+    const reconsider: QaFinding[] = []
+    if (!activeSession) {
+      return { quickWins, strategic, fillIn, reconsider }
+    }
+    for (const f of activeSession.findings) {
+      const hiP = qaMatrixHighPriority(f.priority)
+      const hiE = qaMatrixHighEffort(f.effort)
+      if (hiP && !hiE) quickWins.push(f)
+      else if (hiP && hiE) strategic.push(f)
+      else if (!hiP && !hiE) fillIn.push(f)
+      else reconsider.push(f)
+    }
+    return { quickWins, strategic, fillIn, reconsider }
+  }, [activeSession])
+
   const patchFinding = useCallback(
     (findingId: string, patch: FindingInlinePatch) => {
       if (!sessionIdParam) return
@@ -882,6 +997,7 @@ export function QAPage() {
     setFindingTitle('')
     setFindingDocHtml('')
     setFindingPriority('medium')
+    setFindingEffort('medium')
     setFindingStatus('not_started')
     setFindingEnvironment('STG')
     setFindingCategories(['bugs'])
@@ -894,6 +1010,10 @@ export function QAPage() {
     setCommentComposeOpen(false)
     setFindingDialogOpen(true)
   }, [flushDocDraftOnly, sessionIdParam])
+
+  useEffect(() => {
+    if (!sessionIdParam) setPrioritizationSchemeOpen(false)
+  }, [sessionIdParam])
 
   const filtersActive = useMemo(() => {
     return (
@@ -1058,6 +1178,7 @@ export function QAPage() {
       description: findingDocHtml,
       tags: findingTags,
       priority: findingPriority,
+      effort: findingEffort,
       status: findingStatus,
       environment: findingEnvironment,
       categories: findingCategories,
@@ -1387,6 +1508,31 @@ export function QAPage() {
                             {(['low', 'medium', 'high', 'critical'] as const).map((p) => (
                               <DropdownMenuRadioItem key={p} value={p} className="capitalize">
                                 {p}
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </NotionPropRow>
+                    <NotionPropRow dense icon={Gauge} label="Effort">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(notionModalPropControl, 'text-left capitalize text-foreground')}
+                          >
+                            {modalFinding.effort}
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-44">
+                          <DropdownMenuLabel>Effort</DropdownMenuLabel>
+                          <DropdownMenuRadioGroup
+                            value={modalFinding.effort}
+                            onValueChange={(v) => patchFinding(modalFinding.id, { effort: v as QaEffort })}
+                          >
+                            {QA_EFFORTS.map((e) => (
+                              <DropdownMenuRadioItem key={e} value={e} className="capitalize">
+                                {e}
                               </DropdownMenuRadioItem>
                             ))}
                           </DropdownMenuRadioGroup>
@@ -1729,6 +1875,31 @@ export function QAPage() {
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </NotionPropRow>
+                    <NotionPropRow dense icon={Gauge} label="Effort">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(notionModalPropControl, 'text-left capitalize text-foreground')}
+                          >
+                            {findingEffort}
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-44">
+                          <DropdownMenuLabel>Effort</DropdownMenuLabel>
+                          <DropdownMenuRadioGroup
+                            value={findingEffort}
+                            onValueChange={(v) => setFindingEffort(v as QaEffort)}
+                          >
+                            {QA_EFFORTS.map((e) => (
+                              <DropdownMenuRadioItem key={e} value={e} className="capitalize">
+                                {e}
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </NotionPropRow>
                     <NotionPropRow dense icon={User} label="Assignee">
                       <FindingAssigneePopover
                         appearance="notion"
@@ -1922,6 +2093,95 @@ export function QAPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={prioritizationSchemeOpen} onOpenChange={setPrioritizationSchemeOpen}>
+        <DialogContent
+          showCloseButton
+          className={cn(
+            'flex h-[100dvh] max-h-[100dvh] w-full max-w-full flex-col gap-0 border-0 bg-background p-0 shadow-none backdrop-blur-sm sm:rounded-none',
+            'top-0 left-0 translate-x-0 translate-y-0',
+          )}
+        >
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <DialogHeader className="shrink-0 space-y-2 border-b bg-background px-4 pb-4 pt-12 sm:px-8 sm:pt-14">
+              <DialogTitle>Prioritization scheme</DialogTitle>
+              <DialogDescription>
+                {activeSession
+                  ? `“${activeSession.name}” — all findings on this page, grouped by priority (vertical) and effort (horizontal). Click a title to open that item.`
+                  : 'Open a QA page to use this view.'}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-8 sm:py-6">
+              <div className="mx-auto flex h-full min-h-0 max-w-6xl flex-col gap-4">
+                <p className="shrink-0 text-xs leading-relaxed text-muted-foreground">
+                  <span className="font-medium text-foreground">Priority:</span> bottom rows are low/medium; top rows
+                  are high/critical.
+                  <span className="mx-1.5 inline-block h-3 w-px translate-y-0.5 bg-border" aria-hidden />
+                  <span className="font-medium text-foreground">Effort:</span> left column is low effort; right column
+                  is medium or high effort.
+                </p>
+                <div className="flex min-h-0 flex-1 flex-col rounded-xl border bg-muted/15 p-3 sm:p-5">
+                  <div className="mb-2 grid shrink-0 grid-cols-2 gap-2 pl-12 text-center text-[11px] font-semibold uppercase tracking-wide text-muted-foreground sm:pl-16">
+                    <span>Low effort</span>
+                    <span>Medium / high effort</span>
+                  </div>
+                  <div className="flex min-h-0 flex-1 gap-2 sm:gap-3">
+                    <div className="flex w-11 shrink-0 flex-col justify-between gap-8 py-1 text-[10px] font-medium leading-tight text-muted-foreground sm:w-14 sm:text-[11px]">
+                      <span className="text-right">High / critical priority</span>
+                      <span className="text-right">Low / medium priority</span>
+                    </div>
+                    <div className="grid min-h-[min(52vh,420px)] flex-1 grid-cols-2 grid-rows-2 gap-2 sm:min-h-[min(56vh,480px)] sm:gap-3">
+                      <PrioritizationQuadrant
+                        title="Quick wins"
+                        hint="High priority, low effort — ship soon."
+                        findings={prioritizationBuckets.quickWins}
+                        accent="emerald"
+                        onPickFinding={(f) => {
+                          setPrioritizationSchemeOpen(false)
+                          openFindingModal(f)
+                        }}
+                      />
+                      <PrioritizationQuadrant
+                        title="Major initiatives"
+                        hint="High priority, higher effort — plan capacity."
+                        findings={prioritizationBuckets.strategic}
+                        accent="amber"
+                        onPickFinding={(f) => {
+                          setPrioritizationSchemeOpen(false)
+                          openFindingModal(f)
+                        }}
+                      />
+                      <PrioritizationQuadrant
+                        title="Fill-ins"
+                        hint="Lower priority, low effort — when you have spare time."
+                        findings={prioritizationBuckets.fillIn}
+                        accent="slate"
+                        onPickFinding={(f) => {
+                          setPrioritizationSchemeOpen(false)
+                          openFindingModal(f)
+                        }}
+                      />
+                      <PrioritizationQuadrant
+                        title="Reconsider"
+                        hint="Lower priority, higher effort — deprioritize or rescope."
+                        findings={prioritizationBuckets.reconsider}
+                        accent="rose"
+                        onPickFinding={(f) => {
+                          setPrioritizationSchemeOpen(false)
+                          openFindingModal(f)
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <p className="mt-3 shrink-0 text-center text-[11px] text-muted-foreground">
+                    Effort increases to the right · Priority increases upward
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <AlertDialog open={!!sessionToDelete} onOpenChange={(o) => !o && setSessionToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1992,15 +2252,32 @@ export function QAPage() {
               {formatTime(activeSession.createdAt)}
             </p>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            className="shrink-0 gap-1.5"
-            onClick={openNewFindingModal}
-          >
-            <Plus className="h-4 w-4" />
-            Add QA item
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="hidden gap-1.5 sm:inline-flex"
+              onClick={() => setPrioritizationSchemeOpen(true)}
+            >
+              <LayoutGrid className="h-4 w-4" />
+              Prioritization Scheme
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-8 w-8 shrink-0 sm:hidden"
+              onClick={() => setPrioritizationSchemeOpen(true)}
+              aria-label="Prioritization scheme"
+            >
+              <LayoutGrid className="h-4 w-4" />
+            </Button>
+            <Button type="button" size="sm" className="shrink-0 gap-1.5" onClick={openNewFindingModal}>
+              <Plus className="h-4 w-4" />
+              Add QA item
+            </Button>
+          </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -2301,10 +2578,21 @@ export function QAPage() {
                 <p className="mt-1 text-sm text-muted-foreground">
                   Add a QA item with screenshots, Figma, ticket, and assignee.
                 </p>
-                <Button type="button" variant="secondary" className="mt-4 gap-1.5" onClick={openNewFindingModal}>
-                  <Plus className="h-4 w-4" />
-                  Add QA item
-                </Button>
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="gap-1.5"
+                    onClick={() => setPrioritizationSchemeOpen(true)}
+                  >
+                    <LayoutGrid className="h-4 w-4" />
+                    Prioritization Scheme
+                  </Button>
+                  <Button type="button" variant="secondary" className="gap-1.5" onClick={openNewFindingModal}>
+                    <Plus className="h-4 w-4" />
+                    Add QA item
+                  </Button>
+                </div>
               </div>
             ) : filteredFindings.length === 0 ? (
               <div className="rounded-xl border border-dashed bg-muted/20 p-10 text-center">
@@ -2387,13 +2675,20 @@ export function QAPage() {
                                 type="button"
                                 onClick={(e) => e.stopPropagation()}
                                 className={cn(
-                                  badgeVariants({ variant: f.priority === 'critical' ? 'destructive' : 'outline' }),
                                   cardChipRounded,
-                                  'h-auto shrink-0 cursor-pointer border px-2.5 py-0.5 text-xs font-medium capitalize transition-opacity hover:opacity-90',
-                                  f.priority !== 'critical' && priorityBadgeClass(f.priority),
+                                  'inline-flex h-auto max-w-[14rem] shrink-0 cursor-pointer items-center gap-1.5 border border-neutral-300 bg-white px-2.5 py-0.5 text-xs font-medium text-foreground shadow-none transition-colors hover:bg-neutral-50 dark:border-neutral-600 dark:bg-neutral-950 dark:text-neutral-100 dark:hover:bg-neutral-900',
                                 )}
                               >
-                                {f.priority}
+                                <span className="shrink-0 text-muted-foreground">Priority</span>
+                                <QaCardLevelBars level={f.priority} />
+                                <span
+                                  className={cn(
+                                    'truncate capitalize',
+                                    f.priority === 'critical' && 'font-medium text-destructive',
+                                  )}
+                                >
+                                  {f.priority}
+                                </span>
                               </button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start" className="w-44">
@@ -2405,6 +2700,35 @@ export function QAPage() {
                                 {(['low', 'medium', 'high', 'critical'] as const).map((p) => (
                                   <DropdownMenuRadioItem key={p} value={p} className="capitalize">
                                     {p}
+                                  </DropdownMenuRadioItem>
+                                ))}
+                              </DropdownMenuRadioGroup>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={(e) => e.stopPropagation()}
+                                className={cn(
+                                  cardChipRounded,
+                                  'inline-flex h-auto max-w-[14rem] shrink-0 cursor-pointer items-center gap-1.5 border border-neutral-300 bg-white px-2.5 py-0.5 text-xs font-medium text-foreground shadow-none transition-colors hover:bg-neutral-50 dark:border-neutral-600 dark:bg-neutral-950 dark:text-neutral-100 dark:hover:bg-neutral-900',
+                                )}
+                              >
+                                <span className="shrink-0 text-muted-foreground">Effort</span>
+                                <QaCardLevelBars level={f.effort} />
+                                <span className="truncate capitalize">{f.effort}</span>
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="start" className="w-44">
+                              <DropdownMenuLabel>Effort</DropdownMenuLabel>
+                              <DropdownMenuRadioGroup
+                                value={f.effort}
+                                onValueChange={(v) => patchFinding(f.id, { effort: v as QaEffort })}
+                              >
+                                {QA_EFFORTS.map((e) => (
+                                  <DropdownMenuRadioItem key={e} value={e} className="capitalize">
+                                    {e}
                                   </DropdownMenuRadioItem>
                                 ))}
                               </DropdownMenuRadioGroup>

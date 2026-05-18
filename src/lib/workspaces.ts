@@ -64,6 +64,10 @@ export async function fetchWorkspaces(): Promise<Workspace[]> {
   }
   const rows = (data ?? []) as Workspace[]
   if (rows.length === 0) return [defaultWorkspace()]
+  // Unprefixed routes always target AE; missing row caused CRM to be treated as "default".
+  if (!rows.some((w) => w.id === DEFAULT_WORKSPACE_ID)) {
+    return [defaultWorkspace(), ...rows]
+  }
   return rows
 }
 
