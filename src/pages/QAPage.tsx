@@ -34,6 +34,10 @@ import {
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -80,6 +84,7 @@ import type { AppShellOutletContext } from '@/components/AppShell'
 import { pathForWorkspace } from '@/lib/workspaces'
 import {
   ArrowLeft,
+  ArrowRightLeft,
   Calendar,
   ChevronDown,
   CircleDot,
@@ -723,13 +728,20 @@ export function QAPage() {
   )
 
   useEffect(() => {
-    if (!workspaceRouteReady || !activeWorkspace) {
+    if (!activeWorkspace) {
       setQaRemoteReady(false)
       setState(defaultQaState())
       qaWorkspaceScopeRef.current = null
       return
     }
+    if (!workspaceRouteReady) {
+      setQaRemoteReady(false)
+      return
+    }
     const scopeId = activeWorkspace.id
+    if (qaWorkspaceScopeRef.current === scopeId && qaRemoteReady) {
+      return
+    }
     qaWorkspaceScopeRef.current = scopeId
     setQaRemoteReady(false)
     skipNextAutosaveRef.current = true
@@ -1059,7 +1071,7 @@ export function QAPage() {
     setRenameSessionDialogOpen(true)
   }
 
-  const createSession = () => {
+  const createSession = async () => {
     const name = sessionName.trim()
     if (!name) {
       toast.error('Enter a name for this QA page')
@@ -1068,8 +1080,23 @@ export function QAPage() {
     const id = newId()
     const createdAt = new Date().toISOString()
     const session: QaSession = { id, name, createdAt, findings: [] }
-    setState((prev) => ({ ...prev, sessions: [session, ...prev.sessions] }))
+    const nextState: QaState = { sessions: [session, ...state.sessions] }
+    setState(nextState)
     setSessionDialogOpen(false)
+    skipNextAutosaveRef.current = true
+    const wsId = qaWorkspaceScopeRef.current ?? activeWorkspace?.id
+    if (qaRemoteReady && wsId && remoteSaveEnabledRef.current) {
+      try {
+        await persistQaStateToSupabase(nextState, wsId)
+        saveQaState(nextState, wsId)
+      } catch (err) {
+        const msg = describeError(err, 'Unknown error')
+        toast.error('QA page created locally but sync failed', { description: msg })
+        saveQaState(nextState, wsId)
+      }
+    } else if (wsId) {
+      saveQaState(nextState, wsId)
+    }
     toast.success('QA page started')
     navigate(qaSessionPath(id))
   }
@@ -1303,6 +1330,32 @@ export function QAPage() {
     }))
     setFindingToDelete(null)
     toast.success('Finding removed')
+  }
+
+  const moveFindingToSession = (fromSessionId: string, findingId: string, toSessionId: string) => {
+    if (fromSessionId === toSessionId) return
+    const toName = state.sessions.find((s) => s.id === toSessionId)?.name ?? 'collection'
+    let didMove = false
+    setState((prev) => {
+      let finding: QaFinding | undefined
+      const without = prev.sessions.map((s) => {
+        if (s.id !== fromSessionId) return s
+        finding = s.findings.find((f) => f.id === findingId)
+        return { ...s, findings: s.findings.filter((f) => f.id !== findingId) }
+      })
+      if (!finding) return prev
+      didMove = true
+      const moved: QaFinding = { ...finding, updatedAt: new Date().toISOString() }
+      return {
+        ...prev,
+        sessions: without.map((s) =>
+          s.id === toSessionId ? { ...s, findings: [...s.findings, moved] } : s,
+        ),
+      }
+    })
+    if (!didMove) return
+    if (editingFindingId === findingId) closeFindingModal()
+    toast.success(`Moved to “${toName}”`)
   }
 
   const addComment = () => {
@@ -2822,7 +2875,7 @@ export function QAPage() {
                               <MoreVertical className="h-4 w-4" />
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-44">
+                          <DropdownMenuContent align="end" className="w-52">
                             <DropdownMenuItem
                               onClick={(e) => {
                                 e.stopPropagation()
@@ -2832,6 +2885,34 @@ export function QAPage() {
                               <Pencil className="h-4 w-4" />
                               Edit
                             </DropdownMenuItem>
+                            <DropdownMenuSub>
+                              <DropdownMenuSubTrigger
+                                onClick={(e) => e.stopPropagation()}
+                                onPointerDown={(e) => e.stopPropagation()}
+                              >
+                                <ArrowRightLeft className="h-4 w-4" />
+                                Move to page
+                              </DropdownMenuSubTrigger>
+                              <DropdownMenuSubContent className="max-h-64 overflow-y-auto">
+                                {state.sessions
+                                  .filter((s) => s.id !== activeSession.id)
+                                  .map((s) => (
+                                    <DropdownMenuItem
+                                      key={s.id}
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        moveFindingToSession(activeSession.id, f.id, s.id)
+                                      }}
+                                    >
+                                      {s.name}
+                                    </DropdownMenuItem>
+                                  ))}
+                                {state.sessions.filter((s) => s.id !== activeSession.id).length === 0 ? (
+                                  <DropdownMenuItem disabled>No other collections</DropdownMenuItem>
+                                ) : null}
+                              </DropdownMenuSubContent>
+                            </DropdownMenuSub>
+                            <DropdownMenuSeparator />
                             <DropdownMenuItem
                               variant="destructive"
                               onClick={(e) => {

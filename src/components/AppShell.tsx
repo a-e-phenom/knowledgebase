@@ -97,10 +97,11 @@ export function AppShell() {
   }, [location.pathname, workspaces])
 
   useEffect(() => {
-    setWorkspaceRouteReady(false)
+    let cancelled = false
     void (async () => {
       await ensureDefaultWorkspaceRow()
       const rows = await fetchWorkspaces()
+      if (cancelled) return
       setWorkspaces(rows)
       const fromPath = workspaceIdFromPath(location.pathname, rows)
       const defaultId = rows.some((w) => w.id === DEFAULT_WORKSPACE_ID) ? DEFAULT_WORKSPACE_ID : rows[0]?.id
@@ -112,6 +113,9 @@ export function AppShell() {
       }
       setWorkspaceRouteReady(true)
     })()
+    return () => {
+      cancelled = true
+    }
   }, [location.pathname])
 
   useEffect(() => {
