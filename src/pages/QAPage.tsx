@@ -56,6 +56,10 @@ import {
   saveQaState,
   readStoredState,
   fetchQaStateFromSupabase,
+  deleteQaCommentFromSupabase,
+  deleteQaSessionFromSupabase,
+  insertQaCommentToSupabase,
+  insertQaSessionToSupabase,
   persistQaStateToSupabase,
   newId,
   normalizeTag,
@@ -699,15 +703,12 @@ export function QAPage() {
   /** Supabase scope for this page instance (never follow global id changes mid-unmount). */
   const qaWorkspaceScopeRef = useRef<string | null>(null)
 
-  const enqueueQaPersist = useCallback(
-    (nextState: QaState) => {
-      if (!qaRemoteReady) return
+  const flushQaPersist = useCallback(
+    (nextState: QaState): Promise<void> => {
       const wsId = qaWorkspaceScopeRef.current
-      if (!wsId) return
-      if (!remoteSaveEnabledRef.current) {
-        saveQaState(nextState, wsId)
-        return
-      }
+      if (!wsId) return Promise.resolve()
+      saveQaState(nextState, wsId)
+      if (!qaRemoteReady || !remoteSaveEnabledRef.current) return Promise.resolve()
 
       persistQueueRef.current = persistQueueRef.current
         .catch(() => {
@@ -721,10 +722,19 @@ export function QAPage() {
             const msg = describeError(err, 'Unknown error')
             toast.error('QA sync failed', { description: msg })
             saveQaState(nextState, wsId)
+            throw err
           }
         })
+      return persistQueueRef.current
     },
     [qaRemoteReady],
+  )
+
+  const enqueueQaPersist = useCallback(
+    (nextState: QaState) => {
+      void flushQaPersist(nextState)
+    },
+    [flushQaPersist],
   )
 
   useEffect(() => {
@@ -1077,25 +1087,34 @@ export function QAPage() {
       toast.error('Enter a name for this QA page')
       return
     }
+    if (!qaRemoteReady) {
+      toast.error('Still loading QA — try again in a moment')
+      return
+    }
+    const wsId = qaWorkspaceScopeRef.current ?? activeWorkspace?.id
+    if (!wsId) {
+      toast.error('Workspace not ready')
+      return
+    }
     const id = newId()
     const createdAt = new Date().toISOString()
     const session: QaSession = { id, name, createdAt, findings: [] }
-    const nextState: QaState = { sessions: [session, ...state.sessions] }
-    setState(nextState)
+    let nextState: QaState | null = null
+    setState((prev) => {
+      nextState = { sessions: [session, ...prev.sessions] }
+      return nextState
+    })
+    if (!nextState) return
     setSessionDialogOpen(false)
     skipNextAutosaveRef.current = true
-    const wsId = qaWorkspaceScopeRef.current ?? activeWorkspace?.id
-    if (qaRemoteReady && wsId && remoteSaveEnabledRef.current) {
-      try {
-        await persistQaStateToSupabase(nextState, wsId)
-        saveQaState(nextState, wsId)
-      } catch (err) {
-        const msg = describeError(err, 'Unknown error')
-        toast.error('QA page created locally but sync failed', { description: msg })
-        saveQaState(nextState, wsId)
+    saveQaState(nextState, wsId)
+    try {
+      if (remoteSaveEnabledRef.current) {
+        await insertQaSessionToSupabase(session, wsId)
       }
-    } else if (wsId) {
-      saveQaState(nextState, wsId)
+    } catch (err) {
+      const msg = describeError(err, 'Unknown error')
+      toast.error('QA page created locally but sync failed', { description: msg })
     }
     toast.success('QA page started')
     navigate(qaSessionPath(id))
@@ -1116,17 +1135,46 @@ export function QAPage() {
     toast.success('QA page renamed')
   }
 
-  const confirmDeleteSession = () => {
+  const confirmDeleteSession = async () => {
     if (!sessionToDelete) return
     const deletedId = sessionToDelete.id
-    setState((prev) => ({
-      ...prev,
-      sessions: prev.sessions.filter((s) => s.id !== deletedId),
-    }))
+    const deletedName = sessionToDelete.name
+    const wsId = qaWorkspaceScopeRef.current ?? activeWorkspace?.id
+    let nextState: QaState | null = null
+    setState((prev) => {
+      nextState = { sessions: prev.sessions.filter((s) => s.id !== deletedId) }
+      return nextState
+    })
     setSessionToDelete(null)
-    toast.success('QA page removed')
+    skipNextAutosaveRef.current = true
     if (sessionIdParam === deletedId) {
       navigate(qaListPath, { replace: true })
+    }
+    if (!wsId || !nextState) {
+      toast.success('QA page removed')
+      return
+    }
+    saveQaState(nextState, wsId)
+    if (!remoteSaveEnabledRef.current) {
+      toast.success('QA page removed')
+      return
+    }
+    try {
+      persistQueueRef.current = persistQueueRef.current.catch(() => {}).then(async () => {
+        await deleteQaSessionFromSupabase(deletedId, wsId)
+      })
+      await persistQueueRef.current
+      toast.success(`“${deletedName}” removed`)
+    } catch (err) {
+      const msg = describeError(err, 'Unknown error')
+      toast.error('Could not delete QA page from database', { description: msg })
+      try {
+        const fresh = await fetchQaStateFromSupabase(wsId)
+        setState(fresh)
+        saveQaState(fresh, wsId)
+      } catch {
+        /* keep local state if reload fails */
+      }
     }
   }
 
@@ -1358,7 +1406,7 @@ export function QAPage() {
     toast.success(`Moved to “${toName}”`)
   }
 
-  const addComment = () => {
+  const addComment = async () => {
     if (!sessionIdParam || !editingFindingId || !findingDialogOpen) return
     const author = commentAuthor.trim()
     const text = commentText.trim()
@@ -1370,6 +1418,7 @@ export function QAPage() {
       toast.error('Enter a comment')
       return
     }
+    const wsId = qaWorkspaceScopeRef.current ?? activeWorkspace?.id
     saveLastAuthor(author)
     const comment: QaComment = {
       id: newId(),
@@ -1377,23 +1426,81 @@ export function QAPage() {
       text,
       createdAt: new Date().toISOString(),
     }
-    setState((prev) => ({
-      ...prev,
-      sessions: prev.sessions.map((s) => {
-        if (s.id !== sessionIdParam) return s
-        return {
-          ...s,
-          findings: s.findings.map((f) =>
-            f.id === editingFindingId
-              ? { ...f, comments: [...f.comments, comment], updatedAt: comment.createdAt }
-              : f,
-          ),
-        }
-      }),
-    }))
+    let nextState: QaState | null = null
+    setState((prev) => {
+      nextState = {
+        sessions: prev.sessions.map((s) => {
+          if (s.id !== sessionIdParam) return s
+          return {
+            ...s,
+            findings: s.findings.map((f) =>
+              f.id === editingFindingId
+                ? { ...f, comments: [...f.comments, comment], updatedAt: comment.createdAt }
+                : f,
+            ),
+          }
+        }),
+      }
+      return nextState
+    })
     setCommentText('')
     setCommentComposeOpen(false)
+    skipNextAutosaveRef.current = true
+    if (wsId && nextState) {
+      saveQaState(nextState, wsId)
+    }
+    if (wsId && remoteSaveEnabledRef.current) {
+      try {
+        await insertQaCommentToSupabase(editingFindingId, comment, wsId)
+        toast.success('Comment posted')
+        return
+      } catch (err) {
+        const msg = describeError(err, 'Unknown error')
+        toast.error('Comment saved locally but sync failed', { description: msg })
+      }
+    }
     toast.success('Comment added')
+  }
+
+  const deleteComment = async (findingId: string, commentId: string) => {
+    if (!sessionIdParam) return
+    const wsId = qaWorkspaceScopeRef.current ?? activeWorkspace?.id
+    let nextState: QaState | null = null
+    setState((prev) => {
+      nextState = {
+        sessions: prev.sessions.map((s) => {
+          if (s.id !== sessionIdParam) return s
+          return {
+            ...s,
+            findings: s.findings.map((f) =>
+              f.id === findingId
+                ? {
+                    ...f,
+                    comments: f.comments.filter((c) => c.id !== commentId),
+                    updatedAt: new Date().toISOString(),
+                  }
+                : f,
+            ),
+          }
+        }),
+      }
+      return nextState
+    })
+    skipNextAutosaveRef.current = true
+    if (wsId && nextState) {
+      saveQaState(nextState, wsId)
+    }
+    if (wsId && remoteSaveEnabledRef.current) {
+      try {
+        await deleteQaCommentFromSupabase(findingId, commentId, wsId)
+        toast.success('Comment deleted')
+        return
+      } catch (err) {
+        const msg = describeError(err, 'Unknown error')
+        toast.error('Comment removed locally but sync failed', { description: msg })
+      }
+    }
+    toast.success('Comment deleted')
   }
 
   const sharedDialogs = (
@@ -1803,11 +1910,41 @@ export function QAPage() {
                     <div className="space-y-3">
                       {modalFinding.comments.map((c) => (
                         <div key={c.id} className="rounded-lg border bg-muted/30 p-3">
-                          <div className="flex flex-wrap items-baseline justify-between gap-2">
-                            <p className="text-sm font-semibold text-foreground">{c.author}</p>
-                            <p className="text-xs text-muted-foreground">{formatTime(c.createdAt)}</p>
+                          <div className="flex items-start gap-1">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                                <p className="text-sm font-semibold text-foreground">{c.author}</p>
+                                <p className="text-xs text-muted-foreground">{formatTime(c.createdAt)}</p>
+                              </div>
+                              <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{c.text}</p>
+                            </div>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 shrink-0 text-muted-foreground"
+                                  aria-label="Comment actions"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <MoreVertical className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-40">
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    void deleteComment(modalFinding.id, c.id)
+                                  }}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                  Delete
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </div>
-                          <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{c.text}</p>
                         </div>
                       ))}
                     </div>

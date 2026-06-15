@@ -432,11 +432,18 @@ export async function persistQaStateToSupabase(
     remoteFindings = Math.max(remoteFindings, countQaFindings(b))
   }
   if (incomingFindings === 0 && remoteFindings > 0) {
-    const err = new Error(
-      `Refusing to save QA: would delete ${remoteFindings} remote finding(s) in this workspace with an empty local state. Reload the page; if this persists, restore from a Supabase backup.`,
-    )
-    console.error('[qaStorage]', err.message)
-    throw err
+    const remoteSessionCount = Math.max(0, ...baselineCandidates.map((b) => b.sessions.length))
+    const addingSessions = safeState.sessions.length > remoteSessionCount
+    if (addingSessions) {
+      safeState = mergeFindingsFromRichestBaseline(safeState, baselineCandidates)
+    }
+    if (countQaFindings(safeState) === 0) {
+      const err = new Error(
+        `Refusing to save QA: would delete ${remoteFindings} remote finding(s) in this workspace with an empty local state. Reload the page; if this persists, restore from a Supabase backup.`,
+      )
+      console.error('[qaStorage]', err.message)
+      throw err
+    }
   }
 
   await persistQaStateToNormalizedTables(safeState, workspaceId)
@@ -445,6 +452,246 @@ export async function persistQaStateToSupabase(
     safeState as unknown as Record<string, unknown>,
     workspaceId,
   )
+}
+
+async function loadWorkspaceQaBlobState(workspaceId: string): Promise<QaState> {
+  const fromBlob = parseQaStatePayload(await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA, workspaceId))
+  if (fromBlob) return fromBlob
+  try {
+    const normalized = await fetchQaStateFromNormalizedTables(workspaceId)
+    if (normalized) return normalized
+  } catch {
+    /* ignore */
+  }
+  return defaultQaState()
+}
+
+/** Append one comment to a finding in the JSON blob (preserves other nested data). */
+async function appendCommentToWorkspaceBlob(
+  workspaceId: string,
+  findingId: string,
+  comment: QaComment,
+): Promise<void> {
+  const current = await loadWorkspaceQaBlobState(workspaceId)
+  let found = false
+  const sessions = current.sessions.map((s) => ({
+    ...s,
+    findings: s.findings.map((f) => {
+      if (f.id !== findingId) return f
+      found = true
+      if (f.comments.some((c) => c.id === comment.id)) return f
+      const comments = [...f.comments, comment].sort(
+        (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+      )
+      return { ...f, comments }
+    }),
+  }))
+  if (!found) return
+  await upsertWorkspaceAppDataJson(
+    WORKSPACE_APP_DATA_QA,
+    { sessions } as unknown as Record<string, unknown>,
+    workspaceId,
+  )
+}
+
+/** Add one comment for a finding — upsert row only; never deletes other comments. */
+export async function insertQaCommentToSupabase(
+  findingId: string,
+  comment: QaComment,
+  workspaceId: string = getActiveWorkspaceId(),
+): Promise<void> {
+  const findingIdTrimmed = findingId.trim()
+  if (!findingIdTrimmed) return
+
+  const { error } = await supabase.from('qa_comments').upsert(
+    {
+      workspace_id: workspaceId,
+      id: comment.id,
+      finding_id: findingIdTrimmed,
+      author: comment.author,
+      text: comment.text,
+      created_at: comment.createdAt,
+    },
+    { onConflict: 'workspace_id,id' },
+  )
+  if (error) {
+    if (isMissingQaTablesError(error.message)) return
+    throw error
+  }
+
+  await appendCommentToWorkspaceBlob(workspaceId, findingIdTrimmed, comment)
+}
+
+/** Remove one comment from the JSON blob for a finding. */
+async function removeCommentFromWorkspaceBlob(
+  workspaceId: string,
+  findingId: string,
+  commentId: string,
+): Promise<void> {
+  const current = await loadWorkspaceQaBlobState(workspaceId)
+  let found = false
+  const sessions = current.sessions.map((s) => ({
+    ...s,
+    findings: s.findings.map((f) => {
+      if (f.id !== findingId) return f
+      const nextComments = f.comments.filter((c) => c.id !== commentId)
+      if (nextComments.length === f.comments.length) return f
+      found = true
+      return { ...f, comments: nextComments }
+    }),
+  }))
+  if (!found) return
+  await upsertWorkspaceAppDataJson(
+    WORKSPACE_APP_DATA_QA,
+    { sessions } as unknown as Record<string, unknown>,
+    workspaceId,
+  )
+}
+
+/** Delete one comment — scoped to workspace + comment id only. */
+export async function deleteQaCommentFromSupabase(
+  findingId: string,
+  commentId: string,
+  workspaceId: string = getActiveWorkspaceId(),
+): Promise<void> {
+  const commentIdTrimmed = commentId.trim()
+  if (!commentIdTrimmed) return
+
+  const { error } = await supabase
+    .from('qa_comments')
+    .delete()
+    .eq('workspace_id', workspaceId)
+    .eq('id', commentIdTrimmed)
+  if (error) {
+    if (isMissingQaTablesError(error.message)) return
+    throw error
+  }
+
+  await removeCommentFromWorkspaceBlob(workspaceId, findingId.trim(), commentIdTrimmed)
+}
+
+/** Add one QA page (collection) without wiping existing findings in normalized tables. */
+export async function insertQaSessionToSupabase(
+  session: QaSession,
+  workspaceId: string = getActiveWorkspaceId(),
+): Promise<void> {
+  const { error: sessionError } = await supabase.from('qa_sessions').upsert(
+    {
+      workspace_id: workspaceId,
+      id: session.id,
+      name: session.name,
+      created_at: session.createdAt,
+    },
+    { onConflict: 'workspace_id,id' },
+  )
+  if (sessionError) {
+    if (isMissingQaTablesError(sessionError.message)) return
+    throw sessionError
+  }
+
+  const current = await loadWorkspaceQaBlobState(workspaceId)
+  if (current.sessions.some((s) => s.id === session.id)) return
+  const next: QaState = { sessions: [session, ...current.sessions] }
+  await upsertWorkspaceAppDataJson(
+    WORKSPACE_APP_DATA_QA,
+    next as unknown as Record<string, unknown>,
+    workspaceId,
+  )
+}
+
+/**
+ * Remove one QA page (collection) from this workspace only.
+ * Does not touch other workspaces or other sessions. Child rows are deleted before the session row.
+ */
+export async function deleteQaSessionFromSupabase(
+  sessionId: string,
+  workspaceId: string = getActiveWorkspaceId(),
+): Promise<void> {
+  const sessionIdTrimmed = sessionId.trim()
+  if (!sessionIdTrimmed) return
+
+  const { data: findingRows, error: findingsSelectError } = await supabase
+    .from('qa_findings')
+    .select('id')
+    .eq('workspace_id', workspaceId)
+    .eq('session_id', sessionIdTrimmed)
+  if (findingsSelectError) {
+    if (isMissingQaTablesError(findingsSelectError.message)) return
+    throw findingsSelectError
+  }
+
+  const findingIds = (findingRows ?? []).map((r) => r.id as string)
+  for (const idChunk of chunkArray(findingIds, FINDING_ID_IN_CHUNK)) {
+    if (idChunk.length === 0) continue
+    const { error: commentsError } = await supabase
+      .from('qa_comments')
+      .delete()
+      .eq('workspace_id', workspaceId)
+      .in('finding_id', idChunk)
+    if (commentsError) {
+      if (isMissingQaTablesError(commentsError.message)) return
+      throw commentsError
+    }
+    const { error: screenshotsError } = await supabase
+      .from('qa_screenshots')
+      .delete()
+      .eq('workspace_id', workspaceId)
+      .in('finding_id', idChunk)
+    if (screenshotsError) throw screenshotsError
+  }
+
+  const { error: findingsDeleteError } = await supabase
+    .from('qa_findings')
+    .delete()
+    .eq('workspace_id', workspaceId)
+    .eq('session_id', sessionIdTrimmed)
+  if (findingsDeleteError) {
+    if (isMissingQaTablesError(findingsDeleteError.message)) return
+    throw findingsDeleteError
+  }
+
+  const { error: sessionError } = await supabase
+    .from('qa_sessions')
+    .delete()
+    .eq('workspace_id', workspaceId)
+    .eq('id', sessionIdTrimmed)
+  if (sessionError) {
+    if (isMissingQaTablesError(sessionError.message)) return
+    throw sessionError
+  }
+
+  const raw = await fetchWorkspaceAppDataJson(WORKSPACE_APP_DATA_QA, workspaceId)
+  const parsed = parseQaStatePayload(raw)
+  if (parsed) {
+    const next: QaState = {
+      sessions: parsed.sessions.filter((s) => s.id !== sessionIdTrimmed),
+    }
+    await upsertWorkspaceAppDataJson(
+      WORKSPACE_APP_DATA_QA,
+      next as unknown as Record<string, unknown>,
+      workspaceId,
+    )
+  }
+}
+
+function mergeFindingsFromRichestBaseline(target: QaState, baselines: QaState[]): QaState {
+  let best: QaState | null = null
+  let bestCount = 0
+  for (const b of baselines) {
+    const c = countQaFindings(b)
+    if (c > bestCount) {
+      best = b
+      bestCount = c
+    }
+  }
+  if (!best || bestCount === 0) return target
+  const findingsBySession = new Map(best.sessions.map((s) => [s.id, s.findings]))
+  return {
+    sessions: target.sessions.map((s) => ({
+      ...s,
+      findings: findingsBySession.get(s.id) ?? s.findings,
+    })),
+  }
 }
 
 /**
@@ -920,12 +1167,16 @@ async function persistQaStateToNormalizedTables(
     ),
   )
 
-  // Full replace for deterministic persistence.
-  const { error: delCommentsError } = await supabase.from('qa_comments').delete().eq('workspace_id', workspaceId)
-  if (delCommentsError) {
-    if (isMissingQaTablesError(delCommentsError.message)) return
-    throw delCommentsError
+  // Full replace for findings/sessions/screenshots. Comments are never bulk-deleted; stash before finding replace.
+  const { data: stashedCommentRows, error: stashCommentsError } = await supabase
+    .from('qa_comments')
+    .select('workspace_id, id, finding_id, author, text, created_at')
+    .eq('workspace_id', workspaceId)
+  if (stashCommentsError) {
+    if (isMissingQaTablesError(stashCommentsError.message)) return
+    throw stashCommentsError
   }
+
   const { error: delScreenshotsError } = await supabase
     .from('qa_screenshots')
     .delete()
@@ -941,26 +1192,50 @@ async function persistQaStateToNormalizedTables(
     if (error) throw error
   }
   if (findingsPayload.length > 0) {
-    const { error } = await supabase.from('qa_findings').insert(findingsPayload)
+    let { error } = await supabase.from('qa_findings').insert(findingsPayload)
+    if (error && /effort/i.test(error.message)) {
+      const legacy = findingsPayload.map(({ effort: _effort, ...row }) => row)
+      ;({ error } = await supabase.from('qa_findings').insert(legacy))
+    }
     if (error) throw error
   }
-  if (commentsPayload.length > 0) {
+  if (commentsPayload.length > 0 || (stashedCommentRows?.length ?? 0) > 0) {
+    const validFindingIds = new Set(findingsPayload.map((f) => f.id))
+    const commentRowById = new Map<
+      string,
+      {
+        workspace_id: string
+        id: string
+        finding_id: string
+        author: string
+        text: string
+        created_at: string
+      }
+    >()
+    for (const row of stashedCommentRows ?? []) {
+      const findingId = row.finding_id as string
+      if (!validFindingIds.has(findingId)) continue
+      commentRowById.set(row.id as string, {
+        workspace_id: workspaceId,
+        id: row.id as string,
+        finding_id: findingId,
+        author: row.author as string,
+        text: row.text as string,
+        created_at: row.created_at as string,
+      })
+    }
+    for (const row of commentsPayload) {
+      commentRowById.set(row.id, row)
+    }
+    const mergedComments = [...commentRowById.values()]
     const commentChunks = chunkRowsByEstimatedJsonSize(
-      commentsPayload,
+      mergedComments,
       (row) => (row.text?.length ?? 0) + (row.author?.length ?? 0) + 256,
       MAX_COMMENT_INSERT_PAYLOAD_CHARS,
     )
     for (const chunk of commentChunks) {
-      const { error } = await supabase.from('qa_comments').insert(chunk)
+      const { error } = await supabase.from('qa_comments').upsert(chunk, { onConflict: 'workspace_id,id' })
       if (error) throw error
-    }
-    const { count, error: countError } = await supabase
-      .from('qa_comments')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-    if (countError) throw countError
-    if ((count ?? 0) !== commentsPayload.length) {
-      throw new Error(`QA comment save incomplete: stored ${count ?? 0} of ${commentsPayload.length}`)
     }
   }
   if (screenshotsPayload.length > 0) {
